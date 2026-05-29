@@ -1,49 +1,25 @@
 watch_interval_sec: 1
 aod_output_dir: /var/log/aod
 
-watcher:
-  actions:
-    - dmesg
-    - journalctl
-    - debugdata
-    - stats         # I'm assuming this refers to cifs stats
-
-guardian:
-  anomalies:
-    error:
-      type: "Error"
-      tool: "smbiosnoop"
-      mode: "trackonly"        # Options: all, trackonly, excludeonly
-      acceptable_count: 10  # % of error responses in X seconds
-      track_codes:              # Error codes to track
-        - EACCES
-        - EAGAIN
-        - EIO
-      # exclude_codes:          # Error codes to exclude, not to be used with trackonly
-      #   - ENOENT
-      actions:
-        - dmesg
-        - journalctl           # can add another eBPF tool to trigger here too
-
-
-    # Refer to the note below for more info
+anomalies:
+  smb:
     latency:
-      type: "Latency"
       tool: "smbslower"
       mode: "all"              # Options: all, trackonly, excludeonly
       acceptable_count: 10     # number of commands with latency above threshold in X seconds
       default_threshold_ms: 20 # milliseconds, by default applies to all commands
       track_commands:
         - command: SMB2_WRITE
-          threshold: 50
-      actions:
-        - dmesg
-        - journalctl           
-        - debugdata
-        - stats
-        - mounts
-        - smbinfo
-        - syslogs
+          threshold: 0
+      actions: [dmesg, journalctl, debugdata, stats, mounts, smbinfo, syslogs]
+
+  nfs:
+    latency:
+      tool: "nfsslower"
+      mode: "all"              # Options: all, trackonly, excludeonly
+      acceptable_count: 10     # number of commands with latency above threshold in X seconds
+      default_threshold_ms: 0 # milliseconds, by default applies to all commands
+      actions: [dmesg, journalctl, syslogs]
 
 cleanup:
   cleanup_interval_sec: 60     # Interval in seconds to run cleanup

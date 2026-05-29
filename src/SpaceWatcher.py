@@ -61,7 +61,9 @@ class SpaceWatcher:
             logger.info("SpaceWatcher started running")
         while not self.controller.stop_event.is_set():
             try:
-                entries_data = self._get_compressed_file_stat(self.batches_dir, self.compression_extension)
+                entries_data = self._get_compressed_file_stat(
+                    self.batches_dir, self.compression_extension
+                )
                 if self._check_space(entries_data):
                     self.cleanup_by_size(entries_data)
                 if self._full_cleanup_needed():
@@ -72,7 +74,9 @@ class SpaceWatcher:
                     logger.debug("Full traceback:", exc_info=True)
             time.sleep(self.cleanup_interval)
 
-    def _get_compressed_file_stat(self, directory: Path, extension: str) -> list[tuple[Path, int, float]]:
+    def _get_compressed_file_stat(
+        self, directory: Path, extension: str
+    ) -> list[tuple[Path, int, float]]:
         """Return the total size of compressed files in the directory."""
         entries = list(directory.glob(f"aod_*{extension}"))
         entries_data = []
@@ -111,7 +115,7 @@ class SpaceWatcher:
                     self.max_total_log_size_mb,
                 )
                 return True
-            
+
             return False
 
         except (FileNotFoundError, PermissionError, OSError) as e:
@@ -124,7 +128,7 @@ class SpaceWatcher:
             if __debug__:
                 logger.warning("No eligible AOD entries to cleanup by age")
             return
-        
+
         cutoff = time.time() - self.max_log_age_days * 24 * 60 * 60
         to_delete = [(entry, sz) for entry, sz, mt in entries_data if mt < cutoff]
 
@@ -149,7 +153,7 @@ class SpaceWatcher:
                         sz / 1024,
                     )
             except (FileNotFoundError, PermissionError, OSError) as e:
-                    logger.warning("Failed to delete %s: %s", entry, e)
+                logger.warning("Failed to delete %s: %s", entry, e)
 
         if __debug__:
             self.cleanup_runs += 1
@@ -169,7 +173,9 @@ class SpaceWatcher:
             return
         try:
             total_size = sum(sz for _, sz, _ in entries_data)
-            target_threshold = self.max_total_log_size_mb * 1024 * 1024 * SIZE_DELETE_THRESHOLD
+            target_threshold = (
+                self.max_total_log_size_mb * 1024 * 1024 * SIZE_DELETE_THRESHOLD
+            )
 
             if __debug__:
                 logger.info(

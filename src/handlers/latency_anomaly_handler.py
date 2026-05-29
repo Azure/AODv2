@@ -4,7 +4,7 @@ predefined thresholds for SMB commands."""
 import logging
 import numpy as np
 from base.AnomalyHandlerBase import AnomalyHandler
-from shared_data import ALL_SMB_CMDS
+from ConfigManager import TOOL_TO_CMDS
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +17,11 @@ class LatencyAnomalyHandler(AnomalyHandler):
     def __init__(self, latency_config):
         super().__init__(latency_config)
         self.acceptable_count = self.config.acceptable_count
-        # bcos im iterating over an array of size 20, using for loop wont affect the performance
-        self.threshold_lookup = np.full(len(ALL_SMB_CMDS) + 1, 0, dtype=np.uint64)
-        for smb_cmd_id, threshold in self.config.track.items():
-            self.threshold_lookup[smb_cmd_id] = threshold * 1000000
+        cmd_set = TOOL_TO_CMDS[self.config.tool]
+        lookup_size = max(cmd_set.values()) + 1
+        self.threshold_lookup = np.full(lookup_size, 0, dtype=np.uint64)
+        for cmd_id, threshold in self.config.track.items():
+            self.threshold_lookup[cmd_id] = threshold * 1000000
         logger.debug(
             "LatencyAnomalyHandler initialized with %d thresholds",
             len(self.config.track),
@@ -33,7 +34,7 @@ class LatencyAnomalyHandler(AnomalyHandler):
         anomaly_count = np.sum(
             (
                 events_batch["metric_latency_ns"]
-                >= self.threshold_lookup[events_batch["smbcommand"]]
+                >= self.threshold_lookup[events_batch["command"]]
             )
         )
         max_latency = np.max(events_batch["metric_latency_ns"])

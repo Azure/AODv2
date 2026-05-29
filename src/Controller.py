@@ -17,7 +17,7 @@ import logging
 import syslog
 
 
-from shared_data import ALL_SMB_CMDS
+from shared_data import ALL_SMB_CMDS, ALL_NFS_CMDS
 from ConfigManager import ConfigManager
 from EventDispatcher import EventDispatcher
 from AnomalyWatcher import AnomalyWatcher
@@ -60,8 +60,9 @@ class Controller:
         self.anomalyActionQueue = queue.Queue()
         self.tool_processes = {}
         self.tool_cmd_builders = {
-            "smbslower": self._get_smbsloweraod_cmd,
-            # "smbiosnoop": self._get_smbiosnoop_cmd,
+            "smbslower": self._get_latency_tool_cmd,
+            "nfsslower": self._get_latency_tool_cmd,
+            # "smbiosnoop": self._get_error_tool_cmd,
         }
 
         # Initialize all components
@@ -98,6 +99,7 @@ class Controller:
                         f"AOD component {thread_name} restarted due to unexpected exit",
                     )
 
+        num_consecutive_failures = 0
         t = threading.Thread(target=runner, name=thread_name, daemon=True)
         t.start()
         if __debug__:
@@ -139,31 +141,33 @@ class Controller:
                     process.wait(timeout=5)
                     if __debug__:
                         logger.info("%s process stopped gracefully", process_name)
-                except RuntimeError:
+                except subprocess.TimeoutExpired:
                     logger.warning(
-                        "%s process did not stop gracefully", process_name
+                        "%s process did not stop in time; sending SIGKILL",
+                        process_name,
                     )
+                    try:
+                        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                except ProcessLookupError:
+                    pass
                 break
             time.sleep(1)
 
-    def _get_smbsloweraod_cmd(self) -> list[str]:
-        """Get command array for the smbsloweraod process based on the latency
-        anomaly config."""
-        latency_anomaly = self.config.guardian.anomalies.get("latency")
-        if latency_anomaly is None:
-            min_threshold = 10
-            track_cmds = ",".join(str(cmd_id) for cmd_id in ALL_SMB_CMDS.keys())
-        else:
-            min_threshold = min(list(latency_anomaly.track.values()))
-            # track_cmds: list of all SMB commands we want to track, as numbers, comma-separated
-            smbcmds = [
-                str(cmd_id) for cmd_id, threshold in latency_anomaly.track.items()
-            ]
-            track_cmds = ",".join(smbcmds)
+    def _get_latency_tool_cmd(self, tool_name: str) -> list[str]:
+        """Get command array for a latency eBPF tool based on its anomaly config."""
+        # Find the anomaly config that uses this tool
+        anomaly_cfg = None
+        for cfg in self.config.anomalies.values():
+            if cfg.tool == tool_name:
+                anomaly_cfg = cfg
+                break
 
-        ebpf_binary_path = os.path.join(
-            os.path.dirname(__file__), "bin", "smbsloweraod"
-        )
+        min_threshold = min(list(anomaly_cfg.track.values()))
+        track_cmds = ",".join(str(cmd_id) for cmd_id in anomaly_cfg.track.keys())
+
+        ebpf_binary_path = os.path.join(os.path.dirname(__file__), "bin", tool_name)
         return [ebpf_binary_path, "-m", str(min_threshold), "-c", track_cmds]
 
     def stop(self) -> None:
@@ -172,20 +176,21 @@ class Controller:
 
     def _shutdown(self) -> None:
         """Shutdown all threads and components gracefully."""
-
-        # Wait for all queues to be processed
-        self.eventQueue.join()
-        self.anomalyActionQueue.join()
-
         for thread in self.threads:
             thread.join(timeout=5)
             if __debug__:
-                logger.info(
-                    "Thread %s with ID %d has been shut down",
-                    thread.name,
-                    thread.ident,
-                )
-                logger.info("Shutting down all components")
+                if thread.is_alive():
+                    logger.warning(
+                        "Thread %s with ID %d did not exit within timeout",
+                        thread.name,
+                        thread.ident,
+                    )
+                else:
+                    logger.info(
+                        "Thread %s with ID %d has been shut down",
+                        thread.name,
+                        thread.ident,
+                    )
 
         if hasattr(self, "event_dispatcher"):
             self.event_dispatcher.cleanup()
@@ -195,7 +200,7 @@ class Controller:
     def _extract_tools(self) -> set[str]:
         """Extract the set of ebpf tools to run from the config."""
         tool_names = set()
-        for anomaly in self.config.guardian.anomalies.values():
+        for anomaly in self.config.anomalies.values():
             tool_names.add(anomaly.tool)
         return tool_names
 
@@ -212,7 +217,7 @@ class Controller:
             if cmd_builder:
                 t = threading.Thread(
                     target=self._supervise_process,
-                    args=(tool_name, cmd_builder),
+                    args=(tool_name, lambda tn=tool_name: cmd_builder(tn)),
                     name=f"{tool_name}_Supervisor",
                     daemon=True,
                 )

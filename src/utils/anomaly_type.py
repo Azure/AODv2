@@ -1,6 +1,14 @@
 from enum import Enum
 
 
+class Protocol(Enum):
+    """Enumeration for different protocols."""
+
+    SMB = "smb"
+    NFS = "nfs"
+    # Add more protocols as needed
+
+
 class AnomalyType(Enum):
     """Enumeration for different types of anomalies that can be detected."""
 
@@ -9,8 +17,11 @@ class AnomalyType(Enum):
     # Add more types as needed
 
 
-ANOMALY_TYPE_TO_TOOL_ID = {
-    AnomalyType.LATENCY: 0,
-    AnomalyType.ERROR: -1,  # fill correct value here
+# Maps eBPF tool name to the tool ID byte it writes into events
+TOOL_NAME_TO_ID = {
+    "smbslower": 0,
+    "nfsslower": 1,
+    "smbiosnoop": -1,  # fill correct value
+    "nfsiosnoop": -1,  # fill correct value
     # Add more as needed
 }

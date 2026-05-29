@@ -1,7 +1,15 @@
 """Top level configuration for the AOD."""
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import NamedTuple, Optional
+from utils.anomaly_type import AnomalyType, Protocol
+
+
+class AnomalyKey(NamedTuple):
+    """Composite key for anomaly config: (protocol, anomaly_type)."""
+
+    protocol: Protocol
+    anomaly_type: AnomalyType
 
 
 @dataclass(slots=True, frozen=True)
@@ -11,25 +19,11 @@ class AnomalyConfig:
 
     type: str
     tool: str
+    protocol: str
     acceptable_count: int
     default_threshold_ms: Optional[int] = None
     track: dict[int, Optional[int]] = field(default_factory=dict)
     actions: list[str] = field(default_factory=list)
-
-
-@dataclass(slots=True, frozen=True)
-class GuardianConfig:
-    """GuardianConfig will tell which anomalies to detect and how to handle
-    them."""
-
-    anomalies: dict[str, AnomalyConfig]
-
-
-@dataclass(slots=True, frozen=True)
-class WatcherConfig:
-    """WatcherConfig will tell which actions to be taken."""
-
-    actions: list[str]
 
 
 @dataclass(slots=True, frozen=True)
@@ -38,7 +32,6 @@ class Config:
 
     watch_interval_sec: int
     aod_output_dir: str
-    watcher: WatcherConfig
-    guardian: GuardianConfig
-    cleanup: dict  # could make a dataclass if desired
-    audit: dict  # could make a dataclass if desired
+    anomalies: dict[AnomalyKey, AnomalyConfig]
+    cleanup: dict
+    audit: dict

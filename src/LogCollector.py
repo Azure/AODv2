@@ -62,7 +62,7 @@ class LogCollector:
         using the 'actions' field from each anomaly config in the loaded config.
         """
         anomaly_events = {}
-        for anomaly_name, anomaly_cfg in config.guardian.anomalies.items():
+        for anomaly_name, anomaly_cfg in config.anomalies.items():
             actions = []
             for action_name in getattr(anomaly_cfg, "actions", []):
                 factory = self.action_factory.get(action_name)
