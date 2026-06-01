@@ -3,7 +3,7 @@
 import logging
 import warnings
 import yaml
-from shared_data import ALL_SMB_CMDS, ALL_NFS_CMDS
+from utils.shared_data import ALL_SMB_CMDS, ALL_NFS_CMDS
 from utils.anomaly_type import AnomalyType, Protocol
 from utils.config_schema import Config, AnomalyConfig, AnomalyKey
 

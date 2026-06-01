@@ -1,5 +1,5 @@
 import unittest
-from src import shared_data
+from utils import shared_data
 from collections.abc import Mapping
 
 

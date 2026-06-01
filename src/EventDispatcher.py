@@ -9,7 +9,7 @@ import os
 
 import numpy as np
 
-from shared_data import event_dtype, RB_MAX_RECORDS, RINGBUF_PINNED
+from utils.shared_data import event_dtype, RB_MAX_RECORDS, RINGBUF_PINNED
 
 logger = logging.getLogger(__name__)
 
