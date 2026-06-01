@@ -14,16 +14,14 @@ import time
 import ctypes
 import ctypes.util
 import logging
-import syslog
 
-
-from shared_data import ALL_SMB_CMDS, ALL_NFS_CMDS
 from ConfigManager import ConfigManager
 from EventDispatcher import EventDispatcher
 from AnomalyWatcher import AnomalyWatcher
 from LogCollector import LogCollector
 from SpaceWatcher import SpaceWatcher
 from utils.pdeathsig_wrapper import pdeathsig_preexec
+from utils.syslogger import setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +35,6 @@ def set_thread_name(name):
         libc.prctl(15, name, 0, 0, 0)  # PR_SET_NAME = 15
     except Exception:
         pass
-
 
 class Controller:
     """Main controller class for the AODv2 service."""
@@ -62,7 +59,6 @@ class Controller:
         self.tool_cmd_builders = {
             "smbslower": self._get_latency_tool_cmd,
             "nfsslower": self._get_latency_tool_cmd,
-            # "smbiosnoop": self._get_error_tool_cmd,
         }
 
         # Initialize all components
@@ -87,16 +83,13 @@ class Controller:
                 try:
                     target(*args, **kwargs)
                 except Exception as e:
-                    logger.error("%s thread died unexpectedly: %s", thread_name, e)
+                    logger.exception("%s thread died unexpectedly", thread_name, exc_info=True)
                     if __debug__:
-                        logger.debug("Full traceback:", exc_info=True)
                         self.thread_restarts += 1
                     time.sleep(1)  # Wait before restarting
-                    if __debug__:
-                        logger.info("Restarting %s thread", thread_name)
-                    syslog.syslog(
-                        syslog.LOG_WARNING,
-                        f"AOD component {thread_name} restarted due to unexpected exit",
+                    logger.warning(
+                        "AOD component %s restarted due to unexpected exit",
+                        thread_name,
                     )
 
         num_consecutive_failures = 0
@@ -124,16 +117,12 @@ class Controller:
                     break
                 if process.poll() is not None:
                     logger.warning(
-                        "%s process exited unexpectedly with code %d, restarting...",
+                        "AOD component %s exited unexpectedly with code %d, restarting...",
                         process_name,
                         process.returncode,
                     )
                     if __debug__:
                         self.process_restarts += 1
-                    syslog.syslog(
-                        syslog.LOG_WARNING,
-                        f"AOD component {process_name} restarted due to unexpected exit",
-                    )
                     break
             if self.stop_event.is_set():
                 try:
@@ -157,7 +146,6 @@ class Controller:
 
     def _get_latency_tool_cmd(self, tool_name: str) -> list[str]:
         """Get command array for a latency eBPF tool based on its anomaly config."""
-        # Find the anomaly config that uses this tool
         anomaly_cfg = None
         for cfg in self.config.anomalies.values():
             if cfg.tool == tool_name:
@@ -173,6 +161,7 @@ class Controller:
     def stop(self) -> None:
         """Signal all threads and processes to stop."""
         self.stop_event.set()
+        self.eventQueue.put(None)
 
     def _shutdown(self) -> None:
         """Shutdown all threads and components gracefully."""
@@ -230,6 +219,7 @@ class Controller:
         self._supervise_thread("AnomalyWatcher", self.anomaly_watcher.run)
         self._supervise_thread("LogCollector", self.log_collector_manager.run)
         self._supervise_thread("SpaceWatcher", self.space_watcher.run)
+        logger.info("AODv2 service started successfully")
         self.stop_event.wait()
         self._shutdown()
 
@@ -243,6 +233,14 @@ def handle_signal(controller, signum, frame):
 
 def main():
     """Main entry point for the AODv2 controller daemon."""
+    log_level = os.getenv("AOD_LOG_LEVEL", "INFO").upper()
+    syslog_level = os.getenv("AOD_SYSLOG_LEVEL", "WARNING").upper()
+    stderr = os.getenv("AOD_LOG_STDERR", "0") == "1"
+    setup_logging(
+        getattr(logging, log_level, logging.INFO),
+        stderr=stderr,
+        syslog_level=getattr(logging, syslog_level, logging.WARNING),
+    )
 
     # Check if script is running as root
     if os.geteuid() != 0:
@@ -259,18 +257,10 @@ def main():
 
 
 if __name__ == "__main__":
-    # Simple logging setup - configure root logger
     # Performance optimized: Verbose logger.info calls wrapped in if __debug__
     # Use python -O for production to remove all debug overhead
-    log_level = os.getenv("AOD_LOG_LEVEL", "INFO").upper()
-    logging.basicConfig(
-        level=getattr(logging, log_level, logging.INFO),
-        format="%(name)s - %(levelname)s - %(message)s",
-    )
 
     try:
         main()
     except Exception as e:
-        logging.error("Fatal error in main(): %s", e)
-        if __debug__:
-            logging.debug("Full traceback:", exc_info=True)
+        logger.exception("Fatal error in main():", exc_info=True)

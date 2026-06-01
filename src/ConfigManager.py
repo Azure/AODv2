@@ -33,9 +33,8 @@ class ConfigManager:
         self.data = self._build_config(config_data)
         if __debug__:
             import pprint
-
             logger.debug("Loaded config object:\n%s", pprint.pformat(self.data))
-            logger.info("Configuration loaded successfully")
+        logger.info("Configuration loaded successfully")
 
     def _load_yaml(self, config_path: str):
         """Load the YAML configuration file."""

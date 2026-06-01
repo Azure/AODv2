@@ -17,7 +17,6 @@ from utils.anomaly_type import AnomalyType
 
 logger = logging.getLogger(__name__)
 
-
 class LogCollector:
 
     def __init__(self, controller):
@@ -116,6 +115,11 @@ class LogCollector:
                     tar.add(output_path, arcname=os.path.basename(output_path))
 
         shutil.rmtree(output_path)
+        logger.info(
+            "Completed log collection for anomaly event %s, output: %s",
+            anomaly_event,
+            tar_path,
+        )
 
     async def _create_log_collection_task_with_limit(
         self, anomaly_event, semaphore: asyncio.Semaphore

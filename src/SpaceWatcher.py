@@ -8,6 +8,8 @@ logger = logging.getLogger(__name__)
 SIZE_DELETE_THRESHOLD = 0.85
 MAX_HOT_THRESHOLD = 0.97
 
+cleanup_runs = 0
+total_files_deleted = 0
 
 class SpaceWatcher:
     """Wake up every 10 minutes and check the size of the output dir.
@@ -45,9 +47,6 @@ class SpaceWatcher:
 
         # Metrics tracking
         if __debug__:
-            self.cleanup_runs = 0
-            self.total_files_deleted = 0
-            self.total_space_freed_mb = 0
             logger.info(
                 "SpaceWatcher initialized: max_size=%.2fMB, max_age=%d days, cleanup_interval=%ds",
                 self.max_total_log_size_mb,
@@ -69,10 +68,10 @@ class SpaceWatcher:
                 if self._full_cleanup_needed():
                     self.cleanup_by_age(entries_data)
             except Exception as e:
-                logger.error("SpaceWatcher cleanup failed: %s", e)
-                if __debug__:
-                    logger.debug("Full traceback:", exc_info=True)
-            time.sleep(self.cleanup_interval)
+                logger.exception("SpaceWatcher cleanup failed", exc_info=True)
+            # Sleep on stop_event so shutdown isn't blocked for `cleanup_interval` seconds.
+            if self.controller.stop_event.wait(self.cleanup_interval):
+                break
 
     def _get_compressed_file_stat(
         self, directory: Path, extension: str
@@ -140,6 +139,8 @@ class SpaceWatcher:
         if __debug__:
             deleted_count = 0
             space_freed_bytes = 0
+            global total_files_deleted
+            global cleanup_runs
 
         for entry, sz in to_delete:
             try:
@@ -155,12 +156,14 @@ class SpaceWatcher:
             except (FileNotFoundError, PermissionError, OSError) as e:
                 logger.warning("Failed to delete %s: %s", entry, e)
 
+        logger.info(
+            "Age-based cleanup complete. Deleted %d old entries.", len(to_delete)
+        )
         if __debug__:
-            self.cleanup_runs += 1
-            self.total_files_deleted += deleted_count
-            self.total_space_freed_mb += space_freed_bytes / (1024 * 1024)
+            cleanup_runs += 1
+            total_files_deleted += deleted_count
             logger.info(
-                "Age-based cleanup complete. Deleted %d batch entries (%.1f MB freed).",
+                "Age-based cleanup complete. Deleted %d old entries (%.1f MB freed).",
                 deleted_count,
                 space_freed_bytes / (1024 * 1024),
             )
@@ -188,6 +191,8 @@ class SpaceWatcher:
             if __debug__:
                 deleted_count = 0
                 space_freed_bytes = 0
+                global total_files_deleted
+                global cleanup_runs
 
             if total_size <= target_threshold:
                 return
@@ -209,27 +214,22 @@ class SpaceWatcher:
                 except (FileNotFoundError, PermissionError, OSError) as e:
                     logger.warning("Failed to delete %s: %s", entry, e)
 
+            logger.info(
+                "Size-based cleanup complete. Deleted %d entries",
+                deleted_count
+            )
             if __debug__:
-                self.cleanup_runs += 1
-                self.total_files_deleted += deleted_count
-                self.total_space_freed_mb += space_freed_bytes / (1024 * 1024)
+                cleanup_runs += 1
 
                 # Log comprehensive metrics every 5 cleanup runs
-                if self.cleanup_runs % 5 == 0:
+                if cleanup_runs % 5 == 0:
                     logger.debug(
-                        "SpaceWatcher metrics: runs=%d, files_deleted=%d, space_freed=%.1fMB",
-                        self.cleanup_runs,
-                        self.total_files_deleted,
-                        self.total_space_freed_mb,
-                    )
-
-                logger.info(
-                    "Size-based cleanup complete. Deleted %d entries (%.1f MB freed). Total size now: %.2f MB",
+                    "SpaceWatcher metrics. Deleted %d entries (%.1f MB freed). Total size now: %.2f MB. Total runs: %d, total files deleted: %d.",
                     deleted_count,
                     space_freed_bytes / (1024 * 1024),
                     total_size / (1024 * 1024),
+                    cleanup_runs,
+                    total_files_deleted,
                 )
         except Exception as e:
-            logger.error("Size-based cleanup failed completely: %s", e)
-            if __debug__:
-                logger.debug("Full traceback:", exc_info=True)
+            logger.exception("Size-based cleanup failed completely", exc_info=True)
