@@ -17,6 +17,7 @@ from utils.anomaly_type import AnomalyType
 
 logger = logging.getLogger(__name__)
 
+
 class LogCollector:
 
     def __init__(self, controller):

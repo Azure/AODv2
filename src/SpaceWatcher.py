@@ -11,6 +11,7 @@ MAX_HOT_THRESHOLD = 0.97
 cleanup_runs = 0
 total_files_deleted = 0
 
+
 class SpaceWatcher:
     """Wake up every 10 minutes and check the size of the output dir.
     If it grows over a certain threshold, clean up older logs to bring the usage down to a safe threshold.
@@ -215,8 +216,7 @@ class SpaceWatcher:
                     logger.warning("Failed to delete %s: %s", entry, e)
 
             logger.info(
-                "Size-based cleanup complete. Deleted %d entries",
-                deleted_count
+                "Size-based cleanup complete. Deleted %d entries", deleted_count
             )
             if __debug__:
                 cleanup_runs += 1
@@ -224,12 +224,12 @@ class SpaceWatcher:
                 # Log comprehensive metrics every 5 cleanup runs
                 if cleanup_runs % 5 == 0:
                     logger.debug(
-                    "SpaceWatcher metrics. Deleted %d entries (%.1f MB freed). Total size now: %.2f MB. Total runs: %d, total files deleted: %d.",
-                    deleted_count,
-                    space_freed_bytes / (1024 * 1024),
-                    total_size / (1024 * 1024),
-                    cleanup_runs,
-                    total_files_deleted,
-                )
+                        "SpaceWatcher metrics. Deleted %d entries (%.1f MB freed). Total size now: %.2f MB. Total runs: %d, total files deleted: %d.",
+                        deleted_count,
+                        space_freed_bytes / (1024 * 1024),
+                        total_size / (1024 * 1024),
+                        cleanup_runs,
+                        total_files_deleted,
+                    )
         except Exception as e:
             logger.exception("Size-based cleanup failed completely", exc_info=True)

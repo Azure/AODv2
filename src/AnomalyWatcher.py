@@ -22,6 +22,7 @@ ANOMALY_HANDLER_REGISTRY = {
 total_count = 0
 events_by_tool = {}
 
+
 class AnomalyWatcher:
     """Registers its own tail in eventQueue.
 
@@ -111,9 +112,9 @@ class AnomalyWatcher:
                 masked_batch = batch[batch["tool"] == bytes([tool_id])]
 
                 if __debug__:
-                    events_by_tool[tool_id] = events_by_tool.get(
-                        tool_id, 0
-                    ) + len(masked_batch)
+                    events_by_tool[tool_id] = events_by_tool.get(tool_id, 0) + len(
+                        masked_batch
+                    )
 
                 if len(masked_batch) == 0:
                     continue
@@ -134,7 +135,8 @@ class AnomalyWatcher:
                         anomaly_name,
                         len(masked_batch),
                         time.strftime(
-                            "%Y-%m-%d %H:%M:%S", time.gmtime(action["timestamp"] / 1e9)
+                            "%Y-%m-%d %H:%M:%S",
+                            time.gmtime(action["timestamp"] / 1e9),
                         ),
                     )
                     self.controller.anomalyActionQueue.put(action)

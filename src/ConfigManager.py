@@ -33,6 +33,7 @@ class ConfigManager:
         self.data = self._build_config(config_data)
         if __debug__:
             import pprint
+
             logger.debug("Loaded config object:\n%s", pprint.pformat(self.data))
         logger.info("Configuration loaded successfully")
 

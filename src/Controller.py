@@ -36,6 +36,7 @@ def set_thread_name(name):
     except Exception:
         pass
 
+
 class Controller:
     """Main controller class for the AODv2 service."""
 
@@ -83,7 +84,9 @@ class Controller:
                 try:
                     target(*args, **kwargs)
                 except Exception as e:
-                    logger.exception("%s thread died unexpectedly", thread_name, exc_info=True)
+                    logger.exception(
+                        "%s thread died unexpectedly", thread_name, exc_info=True
+                    )
                     if __debug__:
                         self.thread_restarts += 1
                     time.sleep(1)  # Wait before restarting
