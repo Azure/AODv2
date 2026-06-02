@@ -1,11 +1,10 @@
 import unittest
+from handlers import ErrorAnomalyHandler, LatencyAnomalyHandler
 from src.handlers import (
     CifsstatsQuickAction,
     DebugDataQuickAction,
     DmesgQuickAction,
-    error_anomaly_handler,
     JournalctlQuickAction,
-    latency_anomaly_handler,
     MountsQuickAction,
     SmbinfoQuickAction,
     SysLogsQuickAction,
@@ -23,13 +22,13 @@ class TestHandlers(unittest.TestCase):
         self.assertTrue(hasattr(DmesgQuickAction, "DmesgQuickAction"))
 
     def test_error_anomaly(self):
-        self.assertTrue(hasattr(error_anomaly_handler, "ErrorAnomalyHandler"))
+        self.assertTrue(hasattr(ErrorAnomalyHandler, "ErrorAnomalyHandler"))
 
     def test_journalctl(self):
         self.assertTrue(hasattr(JournalctlQuickAction, "JournalctlQuickAction"))
 
     def test_latency(self):
-        self.assertTrue(hasattr(latency_anomaly_handler, "LatencyAnomalyHandler"))
+        self.assertTrue(hasattr(LatencyAnomalyHandler, "LatencyAnomalyHandler"))
 
     def test_mounts(self):
         self.assertTrue(hasattr(MountsQuickAction, "MountsQuickAction"))

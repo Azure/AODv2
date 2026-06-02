@@ -7,8 +7,8 @@ import time
 import numpy as np
 
 from utils.anomaly_type import AnomalyType, TOOL_NAME_TO_ID
-from handlers.latency_anomaly_handler import LatencyAnomalyHandler
-from handlers.error_anomaly_handler import ErrorAnomalyHandler
+from handlers.LatencyAnomalyHandler import LatencyAnomalyHandler
+from handlers.ErrorAnomalyHandler import ErrorAnomalyHandler
 
 logger = logging.getLogger(__name__)
 
