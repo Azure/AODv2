@@ -4,7 +4,14 @@ import logging
 import warnings
 import yaml
 from utils.shared_data import ALL_SMB_CMDS, ALL_NFS_CMDS
-from utils.anomaly_type import AnomalyType, Protocol
+from utils.anomaly_type import (
+    AnomalyType,
+    Protocol,
+    KNOWN_QUICK_ACTIONS,
+    CAPTURE_TOOLS,
+    CAPTURE_RESERVED_FLAGS,
+    CAPTURE_REQUIRED_FLAGS,
+)
 from utils.config_schema import Config, AnomalyConfig, AnomalyKey
 
 logger = logging.getLogger(__name__)
@@ -60,6 +67,100 @@ class ConfigManager:
             audit=config_data["audit"],
         )
 
+    def _parse_actions(
+        self, raw_actions, anomaly_key
+    ) -> tuple[list[str], dict[str, list[str]]]:
+        """Split the `actions:` mapping into quick-action names and capture specs.
+
+        Expected shape:
+            actions:
+              dmesg:                    # quick action -> null value
+              tcpdump: ["-s", "0"]      # capture -> list of CLI args
+        """
+        if raw_actions is None:
+            return [], {}
+        if not isinstance(raw_actions, dict):
+            raise ValueError(
+                f"'actions' for {anomaly_key} must be a mapping of "
+                f"action_name -> null|list, got {type(raw_actions).__name__}"
+            )
+
+        quick_actions: list[str] = []
+        captures: dict[str, list[str]] = {}
+        for name, value in raw_actions.items():
+            if name in KNOWN_QUICK_ACTIONS:
+                if value not in (None, [], {}):
+                    raise ValueError(
+                        f"Quick action '{name}' for {anomaly_key} takes no "
+                        f"parameters; got {value!r}"
+                    )
+                quick_actions.append(name)
+            elif name in CAPTURE_TOOLS:
+                if value is None:
+                    value = []
+                if not isinstance(value, list) or not all(
+                    isinstance(a, str) for a in value
+                ):
+                    raise ValueError(
+                        f"Capture '{name}' for {anomaly_key} must be a list of "
+                        f"string CLI args, got {value!r}"
+                    )
+                reserved = CAPTURE_RESERVED_FLAGS.get(name, frozenset())
+                for arg in value:
+                    if arg in reserved:
+                        raise ValueError(
+                            f"Capture '{name}' for {anomaly_key} may not specify "
+                            f"reserved flag '{arg}' (AOD controls the output file "
+                            f"and the protocol filter)"
+                        )
+                required = CAPTURE_REQUIRED_FLAGS.get(name, frozenset())
+                missing = sorted(f for f in required if f not in value)
+                if missing:
+                    raise ValueError(
+                        f"Capture '{name}' for {anomaly_key} is missing required "
+                        f"flag(s): {missing}. AOD does not default these because "
+                        f"they control the capture footprint (rotation size/count, "
+                        f"traced events)."
+                    )
+                captures[name] = list(value)
+            else:
+                raise ValueError(
+                    f"Unknown action '{name}' for {anomaly_key}. "
+                    f"Known quick actions: {sorted(KNOWN_QUICK_ACTIONS)}; "
+                    f"capture tools: {sorted(CAPTURE_TOOLS)}"
+                )
+        return quick_actions, captures
+
+    def _validate_capture_exclusivity(
+        self, anomalies: dict[AnomalyKey, AnomalyConfig]
+    ) -> None:
+        """Each capture tool may be bound to at most one protocol across all
+        anomalies. Within the same protocol multiple anomalies may share a
+        capture tool, but they must agree on the CLI args since one process
+        serves them all."""
+        # tool -> (protocol, args)
+        tool_binding: dict[str, tuple[str, list[str]]] = {}
+        for key, cfg in anomalies.items():
+            for tool, args in cfg.captures.items():
+                bound = tool_binding.get(tool)
+                if bound is None:
+                    tool_binding[tool] = (cfg.protocol, args)
+                    continue
+                bound_proto, bound_args = bound
+                if bound_proto != cfg.protocol:
+                    raise ValueError(
+                        f"Capture tool '{tool}' is configured for both "
+                        f"protocol '{bound_proto}' and '{cfg.protocol}'. Each "
+                        f"capture tool may be bound to only one protocol at a time."
+                    )
+                if bound_args != args:
+                    raise ValueError(
+                        f"Capture tool '{tool}' for protocol '{cfg.protocol}' "
+                        f"has conflicting args across anomalies: {bound_args!r} "
+                        f"vs {args!r}. A single capture process serves all "
+                        f"anomalies of one protocol, so args must match."
+                    )
+
     def _parse_anomalies(self, config_data: dict) -> dict[AnomalyKey, AnomalyConfig]:
         """Parse the two-level anomalies section: protocol -> anomaly_type -> config.
         Produces a flat dict keyed by AnomalyKey(protocol, anomaly_type).
@@ -80,6 +181,9 @@ class ConfigManager:
                     raise ValueError(
                         f"No items to track for anomaly '{key}' after applying config logic."
                     )
+                quick_actions, captures = self._parse_actions(
+                    anomaly.get("actions"), key
+                )
                 anomalies[key] = AnomalyConfig(
                     type=anomaly_name,
                     tool=anomaly["tool"],
@@ -87,14 +191,17 @@ class ConfigManager:
                     acceptable_count=anomaly["acceptable_count"],
                     default_threshold_ms=anomaly.get("default_threshold_ms"),
                     track=track,
-                    actions=anomaly.get("actions", []),
+                    quick_actions=quick_actions,
+                    captures=captures,
                 )
+                # TODO: separate userspace and eBPF anomaly configs or unify them in some way
                 if __debug__:
                     logger.debug(
                         "Parsed anomaly config for '%s': %s",
                         key,
                         anomalies[key],
                     )
+        self._validate_capture_exclusivity(anomalies)
         return anomalies
 
     def _check_codes(self, codes, all_codes, code_type):

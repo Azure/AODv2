@@ -111,6 +111,7 @@ class QuickAction(ABC):
         if __debug__:
             logger.debug("Collecting command output for: %s", " ".join(cmd))
         try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,

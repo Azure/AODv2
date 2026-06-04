@@ -73,10 +73,18 @@ class Controller:
             logger.info("Controller initialization complete")
 
     def _supervise_thread(
-        self, thread_name: str, target: callable, *args, **kwargs
+        self,
+        thread_name: str,
+        target: callable,
+        *args,
+        fatal_on_exc: bool = False,
+        **kwargs,
     ) -> None:
         """Start and supervise a thread, restarting it if it dies
-        unexpectedly."""
+        unexpectedly. If fatal_on_exc is True, an unhandled exception
+        instead escalates to a full service shutdown -- use this for
+        components that own non-reentrant state (e.g. an asyncio loop with
+        attached subprocesses) where restart-in-place would leak resources."""
 
         def runner():
             set_thread_name(thread_name)  # only to view thread name in top
@@ -87,6 +95,13 @@ class Controller:
                     logger.exception(
                         "%s thread died unexpectedly", thread_name, exc_info=True
                     )
+                    if fatal_on_exc:
+                        logger.error(
+                            "%s cannot be restarted in-place; shutting down service",
+                            thread_name,
+                        )
+                        self.stop()
+                        return
                     if __debug__:
                         self.thread_restarts += 1
                     time.sleep(1)  # Wait before restarting
@@ -164,7 +179,12 @@ class Controller:
     def stop(self) -> None:
         """Signal all threads and processes to stop."""
         self.stop_event.set()
+        # Wake AnomalyWatcher. It will propagate its own sentinel to
+        # anomalyActionQueue, but we also push one here as a backup in case
+        # AnomalyWatcher died before reaching its post-loop sentinel push;
+        # otherwise LogCollector would block forever in queue.get().
         self.eventQueue.put(None)
+        self.anomalyActionQueue.put(None)
 
     def _shutdown(self) -> None:
         """Shutdown all threads and components gracefully."""
@@ -220,7 +240,13 @@ class Controller:
 
         self._supervise_thread("EventDispatcher", self.event_dispatcher.run)
         self._supervise_thread("AnomalyWatcher", self.anomaly_watcher.run)
-        self._supervise_thread("LogCollector", self.log_collector_manager.run)
+        # LogCollector owns an asyncio loop with attached subprocess handles
+        # (LongCapture). A fresh loop on restart would orphan those handles
+        # and leak their underlying processes, so escalate to a full shutdown
+        # and let the service supervisor restart us cleanly.
+        self._supervise_thread(
+            "LogCollector", self.log_collector_manager.run, fatal_on_exc=True
+        )
         self._supervise_thread("SpaceWatcher", self.space_watcher.run)
         logger.info("AODv2 service started successfully")
         self.stop_event.wait()

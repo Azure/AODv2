@@ -172,12 +172,11 @@ class AnomalyWatcher:
                 avg_latency_ms,
             )
 
-    def _generate_action(self, anomaly_name: str, anomaly_cfg) -> dict:
-        """Generate an action based on the detected anomaly."""
-        timestamp_ns = int(time.time() * 1e9)  # nanoseconds since epoch
-        anomaly_type = AnomalyType(anomaly_cfg.type.strip().lower())
+    def _generate_action(self, anomaly_key, anomaly_cfg) -> dict:
+        """Generate an action based on the detected anomaly. anomaly_key is the
+        AnomalyKey(protocol, anomaly_type) under which the anomaly is
+        registered in the config."""
         return {
-            "anomaly": anomaly_type,
-            "anomaly_name": anomaly_name,
-            "timestamp": timestamp_ns,
+            "anomaly_key": anomaly_key,
+            "timestamp": int(time.time() * 1e9),  # nanoseconds since epoch
         }

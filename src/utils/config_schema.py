@@ -23,7 +23,9 @@ class AnomalyConfig:
     acceptable_count: int
     default_threshold_ms: Optional[int] = None
     track: dict[int, Optional[int]] = field(default_factory=dict)
-    actions: list[str] = field(default_factory=list)
+    quick_actions: list[str] = field(default_factory=list)
+    # tool name -> raw CLI args (AOD adds -w/-o and the protocol filter at runtime)
+    captures: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass(slots=True, frozen=True)
