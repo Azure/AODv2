@@ -6,7 +6,7 @@ The capture handles its own lifecycle: spawn, supervise, snapshot on demand,
 
 Visible to LogCollector:
     await capture.run(stop_event)          # supervisor coroutine
-    await capture.snapshot(batch_id)       # fire-and-forget request
+    capture.snapshot(batch_id)             # fire-and-forget request
 """
 
 import asyncio
@@ -67,10 +67,12 @@ class LongCapture(ABC):
         """Return the full argv to spawn the capture process writing to
         output_path."""
 
-    async def snapshot(self, batch_id: str) -> None:
-        """Fire-and-forget snapshot request. The supervisor will stop the
-        recorder, bundle its output, and respawn. Bundling happens in the
-        background; the resulting tarball path is logged by the supervisor.
+    def snapshot(self, batch_id: str) -> None:
+        """Fire-and-forget snapshot request. Non-blocking: the unbounded
+        queue accepts the request immediately and the supervisor coroutine
+        handles stop/bundle/restart in the background. The resulting tarball
+        path is logged by the supervisor.
+
         batch_id is the same identifier LogCollector uses for the sibling
         quick-action tarball ("<ts>_<proto>_<anomaly_type>")."""
         if self._disabled:
@@ -78,7 +80,7 @@ class LongCapture(ABC):
                 "Snapshot for %s dropped: capture disabled", self.protocol.value
             )
             return
-        await self._snap_q.put(batch_id)
+        self._snap_q.put_nowait(batch_id)
 
     async def run(self, stop_event) -> None:
         """Supervise the capture process: spawn -> wait on (process exit or
@@ -269,16 +271,21 @@ class LongCapture(ABC):
             f"aod_capture_{batch_id}.tar.zst",
         )
         cctx = zstd.ZstdCompressor(level=3)
-        with (
-            open(tar_path, "wb") as f,
-            cctx.stream_writer(f) as writer,
-            tarfile.open(fileobj=writer, mode="w|") as tar,
-        ):
+        try:
+            with (
+                open(tar_path, "wb") as f,
+                cctx.stream_writer(f) as writer,
+                tarfile.open(fileobj=writer, mode="w|") as tar,
+            ):
+                for p in files:
+                    tar.add(p, arcname=os.path.basename(p))
+        finally:
+            # Always drop the source cap* files so the next snapshot doesn't
+            # tar them again on top of fresh data. The supervisor's outer
+            # except logs the bundling failure separately.
             for p in files:
-                tar.add(p, arcname=os.path.basename(p))
-        for p in files:
-            try:
-                os.remove(p)
-            except OSError:
-                pass
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
         return tar_path

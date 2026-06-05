@@ -128,13 +128,17 @@ class LogCollector:
     def _bundle_quick_actions(output_path: str) -> str:
         tar_path = f"{output_path}.tar.zst"
         cctx = zstd.ZstdCompressor(level=3)
-        with (
-            open(tar_path, "wb") as f,
-            cctx.stream_writer(f) as writer,
-            tarfile.open(fileobj=writer, mode="w|") as tar,
-        ):
-            tar.add(output_path, arcname=os.path.basename(output_path))
-        shutil.rmtree(output_path)
+        try:
+            with (
+                open(tar_path, "wb") as f,
+                cctx.stream_writer(f) as writer,
+                tarfile.open(fileobj=writer, mode="w|") as tar,
+            ):
+                tar.add(output_path, arcname=os.path.basename(output_path))
+        finally:
+            # Always drop the staging dir so a bundling failure doesn't leave
+            # aod_quick_<batch_id>/ behind for SpaceWatcher to clean up later.
+            shutil.rmtree(output_path, ignore_errors=True)
         return tar_path
 
     async def _create_log_collection_task(self, anomaly_event) -> None:
@@ -167,7 +171,7 @@ class LogCollector:
         # tarball path itself.
         capture = self.captures.get(protocol)
         if capture is not None:
-            await capture.snapshot(batch_id)
+            capture.snapshot(batch_id)
 
         quick_tar_path = None
         if handlers:
