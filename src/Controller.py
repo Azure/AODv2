@@ -277,8 +277,12 @@ def main():
 
     # add arguments later
 
-    # Use the config path relative to this file, as in controller_draft.py
-    config_path = os.path.join(os.path.dirname(__file__), "../config/config.yaml")
+    # Resolve config path. Installed deployments set AOD_CONFIG via systemd;
+    # falls back to the in-repo path for development runs from a checkout.
+    config_path = os.environ.get(
+        "AOD_CONFIG",
+        os.path.join(os.path.dirname(__file__), "../config/config.yaml"),
+    )
     controller = Controller(config_path)
     signal.signal(signal.SIGTERM, partial(handle_signal, controller))
     signal.signal(signal.SIGINT, partial(handle_signal, controller))
