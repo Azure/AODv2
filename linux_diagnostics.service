@@ -1,13 +1,28 @@
+#
+# Installed to /usr/lib/systemd/system/linux_diagnostics.service
+#
+
 [Unit]
-Description=Linux Diagnostics Controller Service
+Description=Linux Always-On Diagnostics Controller Service
 After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /usr/bin/linux_diagnostics_controller
+ExecStart=/opt/linux_diagnostics/venv/bin/python -O /opt/linux_diagnostics/src/Controller.py
+Environment=PYTHONPATH=/opt/linux_diagnostics/src
+Environment=AOD_CONFIG=/etc/linux_diagnostics/config.yaml
 Restart=on-failure
+RestartSec=5
 User=root
-WorkingDirectory=/var/run/linux_diagnostics/
+
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=90s
+
+OOMScoreAdjust=-500
+LimitNOFILE=8192
 
 [Install]
 WantedBy=multi-user.target
