@@ -1,0 +1,17 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove|purge)
+        # The venv is built in postinst and is not tracked by dpkg, so
+        # remove it explicitly. Mirrors the RPM %postun cleanup.
+        rm -rf /opt/linux_diagnostics/venv
+        rm -rf /etc/linux_diagnostics
+        ;;
+    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

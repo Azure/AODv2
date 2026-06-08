@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # On install ($2 empty) and upgrade ($2 = old version), build/refresh
+        # the venv from the shipped pyproject.toml.
+        rm -rf /opt/linux_diagnostics/venv
+        /usr/bin/python3 -m venv /opt/linux_diagnostics/venv
+        /opt/linux_diagnostics/venv/bin/pip install --upgrade pip
+        /opt/linux_diagnostics/venv/bin/pip install /opt/linux_diagnostics
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

@@ -1,0 +1,13 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+# Nothing to compile at dpkg-build time. The eBPF user-space binaries
+# (src/bin/{nfsslower,smbslower}) are produced by `make` in the source
+# tree before dpkg-buildpackage is invoked.
+override_dh_auto_configure:
+override_dh_auto_build:
+override_dh_auto_test:
+override_dh_auto_install:
+	dh_install

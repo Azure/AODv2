@@ -1,8 +1,0 @@
-Package: linux-diagnostics
-Version: 1.0.0
-Maintainer: Your Name <your.email@example.com>
-Architecture: all
-Depends: python3, python3-yaml, python3-subprocess
-Description: Linux Diagnostics Controller Daemon
- This package provides a daemon for monitoring and diagnosing issues in Linux systems.
- It reads configuration from a YAML file and executes diagnostics based on specified anomalies.

@@ -1,0 +1,23 @@
+Source: linux-diagnostics
+Section: admin
+Priority: optional
+Maintainer: Meetakshi Setiya <msetiya@microsoft.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://github.com/Azure/AODv2
+
+Package: linux-diagnostics
+Architecture: amd64
+Depends: ${misc:Depends},
+         python3 (>= 3.11),
+         python3-venv,
+         python3-pip
+Description: Always-on diagnostics daemon for Linux NFS and SMB filesystems
+ Always-on Diagnostics daemon for monitoring Linux NFS and SMB anomalies
+ and automatic log-collection.
+ .
+ The daemon is installed under /opt/linux_diagnostics and runs from a
+ self-contained Python virtual environment built at install time.
+ Configuration lives in /etc/linux_diagnostics/config.yaml; the output
+ directory is user-tunable via the aod_output_dir key in that file and
+ is created by the daemon on first use.

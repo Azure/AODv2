@@ -1,0 +1,4 @@
+src                          opt/linux_diagnostics/
+pyproject.toml               opt/linux_diagnostics/
+config/config.yaml           etc/linux_diagnostics/
+linux_diagnostics.service    lib/systemd/system/

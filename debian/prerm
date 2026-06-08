@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+
+# dh_installsystemd injects stop-on-remove logic here; on upgrade the
+# service is left running so the new postinst can restart it.
+#DEBHELPER#
+
+exit 0
