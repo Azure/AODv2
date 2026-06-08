@@ -25,7 +25,10 @@ _CAPTURE_CLASSES = {
     "trace-cmd": TraceCmdCapture,
 }
 
-LONG_CAPTURE_RESTART_DELAY_SEC = 1  # Time to wait after stopping a capture before restarting it.
+LONG_CAPTURE_RESTART_DELAY_SEC = (
+    1  # Time to wait after stopping a capture before restarting it.
+)
+
 
 class LogCollector:
 
