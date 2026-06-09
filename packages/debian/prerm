@@ -2,9 +2,9 @@
 set -e
 
 # Stop the systemd service for the Linux diagnostics controller daemon
-systemctl stop linux_diagnostics.service || true
+systemctl stop aodv2.service || true
 
 # Disable the systemd service to prevent it from starting on boot
-systemctl disable linux_diagnostics.service || true
+systemctl disable aodv2.service || true
 
 exit 0

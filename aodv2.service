@@ -1,5 +1,5 @@
 #
-# Installed to /usr/lib/systemd/system/linux_diagnostics.service
+# Installed to /usr/lib/systemd/system/aodv2.service
 #
 
 [Unit]
@@ -10,9 +10,9 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-ExecStart=/opt/linux_diagnostics/venv/bin/python -O /opt/linux_diagnostics/src/Controller.py
-Environment=PYTHONPATH=/opt/linux_diagnostics/src
-Environment=AOD_CONFIG=/etc/linux_diagnostics/config.yaml
+ExecStart=/opt/aodv2/venv/bin/python -O /opt/aodv2/src/Controller.py
+Environment=PYTHONPATH=/opt/aodv2/src
+Environment=AOD_CONFIG=/etc/aodv2/config.yaml
 Restart=on-failure
 RestartSec=5
 User=root

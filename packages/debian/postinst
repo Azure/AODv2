@@ -2,7 +2,7 @@
 set -e
 
 # Enable and start the systemd service for the Linux diagnostics controller daemon
-systemctl enable linux_diagnostics.service || true
-systemctl start linux_diagnostics.service || true
+systemctl enable aodv2.service || true
+systemctl start aodv2.service || true
 
 echo "Linux diagnostics controller daemon has been installed and started."

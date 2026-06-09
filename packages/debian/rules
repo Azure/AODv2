@@ -8,19 +8,19 @@ override_dh_auto_install:
     python3 setup.py install --root=$(DESTDIR)
 
     # Install the systemd service file
-    install -D -m 644 src/linux_diagnostics.service $(DESTDIR)/lib/systemd/system/linux_diagnostics.service
+    install -D -m 644 src/aodv2.service $(DESTDIR)/lib/systemd/system/aodv2.service
 
     # Install the configuration file
-    install -D -m 644 config/config.yaml $(DESTDIR)/etc/linux_diagnostics/config.yaml
+    install -D -m 644 config/config.yaml $(DESTDIR)/etc/aodv2/config.yaml
 
     # Install the controller script
-    install -D -m 755 src/controller $(DESTDIR)/usr/bin/linux_diagnostics_controller
+    install -D -m 755 src/controller $(DESTDIR)/usr/bin/aodv2_controller
 
     # Ensure the output directory exists
-    mkdir -p $(DESTDIR)/var/log/linux_diagnostics
+    mkdir -p $(DESTDIR)/var/log/aodv2
 
 override_dh_systemd_enable:
-    dh_systemd_enable -p$(package) linux_diagnostics.service
+    dh_systemd_enable -p$(package) aodv2.service
 
 override_dh_systemd_start:
-    dh_systemd_start -p$(package) linux_diagnostics.service
+    dh_systemd_start -p$(package) aodv2.service
