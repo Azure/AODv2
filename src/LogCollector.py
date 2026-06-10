@@ -62,7 +62,7 @@ class LogCollector:
                 self.aod_output_dir, num_lines=100
             ),
         }
-        self.handlers = self.get_anomaly_events(controller.config)
+        self.handlers, self.all_handlers = self.get_anomaly_events(controller.config)
 
         # One LongCapture per protocol. Each owns its own process lifecycle.
         self.captures: dict[Protocol, LongCapture] = self._build_captures(
@@ -73,21 +73,29 @@ class LogCollector:
         )
         self._capture_tasks: list[asyncio.Task] = []
 
-    def get_anomaly_events(self, config) -> dict:
+    def get_anomaly_events(self, config) -> tuple[dict, list]:
         """
         Build a mapping from AnomalyKey (protocol, anomaly_type) to a list of
         action instances, using the 'quick_actions' field from each anomaly
         config. Keyed by the full AnomalyKey so anomalies that share an
         AnomalyType across different protocols (e.g. smb.latency and
         nfs.latency).
+
+        Also returns the union of all handlers deduped by class, for
+        full-system snapshot events that run every configured action once.
         """
         anomaly_events = {}
+        all_handlers: dict = {}
         for anomaly_key, anomaly_cfg in config.anomalies.items():
             actions = []
             for action_name in getattr(anomaly_cfg, "quick_actions", []):
                 factory = self.action_factory.get(action_name)
                 if factory is not None:
-                    actions.append(factory())
+                    handler = factory()
+                    actions.append(handler)
+                    # currently, we have hardcoded the command line args given to the handlers. So, pick the unique ones
+                    if type(handler) not in all_handlers:
+                        all_handlers[type(handler)] = handler
                 else:
                     logger.warning(
                         "No factory for action '%s' in anomaly '%s'",
@@ -95,7 +103,7 @@ class LogCollector:
                         anomaly_key,
                     )
             anomaly_events[anomaly_key] = actions
-        return anomaly_events
+        return anomaly_events, list(all_handlers.values())
 
     def _build_captures(
         self, config, capture_root: str, bundle_dir: str, restart_delay: float
@@ -155,11 +163,18 @@ class LogCollector:
         # different anomalies that fire at the same ns timestamp.
         batch_id = f"{anomaly_event['timestamp']}_{anomaly_name_str}"
 
-        handlers = self.handlers.get(anomaly_key, [])
-        protocol = anomaly_key.protocol
-        has_capture = protocol in self.captures
+        is_snapshot = anomaly_key.protocol == Protocol.AOD
+        if is_snapshot:
+            handlers = self.all_handlers
+            capture_items = list(self.captures.items())
+        else:
+            handlers = self.handlers.get(anomaly_key, [])
+            cap = self.captures.get(anomaly_key.protocol)
+            capture_items = (
+                [(anomaly_key.protocol, cap)] if cap is not None else []
+            )
 
-        if not handlers and not has_capture:
+        if not handlers and not capture_items:
             logger.warning(
                 "No handlers or captures configured for %s, skipping",
                 anomaly_key,
@@ -168,17 +183,22 @@ class LogCollector:
 
         # Fire-and-forget snapshot request; the capture supervisor handles
         # stop/bundle/restart in the background and logs the resulting
-        # tarball path itself.
-        capture = self.captures.get(protocol)
-        if capture is not None:
-            capture.snapshot(batch_id)
+        # tarball path itself. For full-system snapshots we suffix the
+        # protocol so each capture's aod_capture_<batch_id> tarball is unique.
+        for proto, capture in capture_items:
+            cap_batch_id = (
+                f"{batch_id}_{proto.value}" if is_snapshot else batch_id
+            )
+            capture.snapshot(cap_batch_id)
 
         quick_tar_path = None
         if handlers:
+
+            output_path = handlers[0].get_output_dir(batch_id)
+            os.makedirs(output_path, exist_ok=True)
             await asyncio.gather(
                 *[handler.execute(batch_id) for handler in handlers]
             )
-            output_path = handlers[0].get_output_dir(batch_id)
             quick_tar_path = await asyncio.to_thread(
                 self._bundle_quick_actions, output_path
             )
@@ -199,9 +219,8 @@ class LogCollector:
                 if __debug__:
                     self.tasks_processed += 1
             except Exception as e:
-                logger.error(
-                    "Error %s while collecting logs for anomaly action %s",
-                    e,
+                logger.exception(
+                    "Error while collecting logs for anomaly action %s",
                     anomaly_event,
                 )
                 if __debug__:

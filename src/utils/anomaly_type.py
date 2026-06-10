@@ -6,6 +6,9 @@ class Protocol(Enum):
 
     SMB = "smb"
     NFS = "nfs"
+    # Synthetic protocol used internally to tag full-system snapshot events
+    # (manual SIGUSR1 trigger or service shutdown). Not valid in user config.
+    AOD = "aod"
     # Add more protocols as needed
 
 
@@ -14,6 +17,9 @@ class AnomalyType(Enum):
 
     LATENCY = "latency"
     ERROR = "error"
+    # Synthetic types paired with Protocol.AOD for full-system dumps.
+    SNAPSHOT = "snapshot"
+    SHUTDOWN = "shutdown"
     # Add more types as needed
 
 

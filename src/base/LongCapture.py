@@ -76,8 +76,13 @@ class LongCapture(ABC):
         batch_id is the same identifier LogCollector uses for the sibling
         quick-action tarball ("<ts>_<proto>_<anomaly_type>")."""
         if self._disabled:
-            logger.debug(
-                "Snapshot for %s dropped: capture disabled", self.protocol.value
+            # User should know why no aod_capture_* tarball exists for this batch_id and can correlate with the nearest successful capture bundle by timestamp prefix.
+            logger.warning(
+                "%s capture for %s DROPPED snapshot %s: capture disabled. "
+                "Check the aod_capture_*<proto>* bundle closest in time for context.",
+                self.tool_name,
+                self.protocol.value,
+                batch_id,
             )
             return
         self._snap_q.put_nowait(batch_id)
@@ -102,7 +107,7 @@ class LongCapture(ABC):
                 if not await self._spawn(live_path):
                     self._spawn_failures += 1
                     if self._spawn_failures >= _MAX_SPAWN_FAILURES:
-                        logger.error(
+                        logger.exception(
                             "%s capture for %s failed to spawn %d times; "
                             "disabling captures for this protocol",
                             self.tool_name,
@@ -180,16 +185,26 @@ class LongCapture(ABC):
             raise
         finally:
             await self._stop()
-            dropped = 0
+            dropped_ids: list[str] = []
             while not self._snap_q.empty():
-                self._snap_q.get_nowait()
-                dropped += 1
-            if dropped:
+                dropped_ids.append(self._snap_q.get_nowait())
+            if dropped_ids:
+                # These snapshots arrived after we'd already committed to
+                # shutting down (e.g. SHUTDOWN dump enqueued right after a
+                # SIGUSR1 SNAPSHOT). The capture data for them is lost; the
+                # quick-action tarball with the matching batch_id is still
+                # written. Point the operator at the nearest aod_capture_*
+                # bundle for this protocol to recover context.
                 logger.warning(
-                    "%s capture for %s dropped %d queued snapshot request(s) at shutdown",
+                    "%s capture for %s DROPPED %d queued snapshot(s) at shutdown: %s. "
+                    "Quick-action tarballs aod_quick_<batch_id>.tar.zst still exist; "
+                    "for capture context check the aod_capture_*_%s.tar.zst bundle "
+                    "closest in time to these batch_ids.",
                     self.tool_name,
                     self.protocol.value,
-                    dropped,
+                    len(dropped_ids),
+                    ", ".join(dropped_ids),
+                    self.protocol.value,
                 )
             # Reap the stop_event waiter. If stop_event was set normally it
             # has already completed; if we're exiting via cancellation the
@@ -223,11 +238,10 @@ class LongCapture(ABC):
             )
             return True
         except Exception as e:
-            logger.error(
-                "Failed to spawn %s capture for %s: %s",
+            logger.exception(
+                "Failed to spawn %s capture for %s",
                 self.tool_name,
                 self.protocol.value,
-                e,
             )
             return False
 

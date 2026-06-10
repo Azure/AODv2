@@ -20,6 +20,8 @@ from EventDispatcher import EventDispatcher
 from AnomalyWatcher import AnomalyWatcher
 from LogCollector import LogCollector
 from SpaceWatcher import SpaceWatcher
+from utils.anomaly_type import AnomalyType, Protocol
+from utils.config_schema import AnomalyKey
 from utils.pdeathsig_wrapper import pdeathsig_preexec
 from utils.syslogger import setup_logging
 
@@ -176,8 +178,28 @@ class Controller:
         ebpf_binary_path = os.path.join(os.path.dirname(__file__), "bin", tool_name)
         return [ebpf_binary_path, "-m", str(min_threshold), "-c", track_cmds]
 
+    def trigger_snapshot(
+        self, anomaly_type: AnomalyType = AnomalyType.SNAPSHOT
+    ) -> None:
+        """Enqueue a full-system dump request. Safe to call from a signal
+        handler. No-op once shutdown is in progress so we don't race with
+        the sentinel pushed by stop()."""
+        if self.stop_event.is_set() and anomaly_type != AnomalyType.SHUTDOWN:
+            return
+        self.anomalyActionQueue.put(
+            {
+                "anomaly_key": AnomalyKey(Protocol.AOD, anomaly_type),
+                "timestamp": int(time.time() * 1e9),
+            }
+        )
+
     def stop(self) -> None:
         """Signal all threads and processes to stop."""
+        # Enqueue a shutdown dump BEFORE the sentinel so LogCollector picks
+        # it up before draining. Guard against double-stop (SIGTERM during
+        # SIGINT, etc.) so we don't emit two shutdown dumps.
+        if not self.stop_event.is_set():
+            self.trigger_snapshot(AnomalyType.SHUTDOWN)
         self.stop_event.set()
         # Wake AnomalyWatcher. It will propagate its own sentinel to
         # anomalyActionQueue, but we also push one here as a backup in case
@@ -260,6 +282,13 @@ def handle_signal(controller, signum, frame):
     controller.stop()
 
 
+def handle_snapshot_signal(controller, signum, frame):
+    """Handle SIGUSR1 by enqueuing a full-system snapshot."""
+    if __debug__:
+        logger.info("Received signal %d, triggering snapshot...", signum)
+    controller.trigger_snapshot()
+
+
 def main():
     """Main entry point for the AODv2 controller daemon."""
     log_level = os.getenv("AOD_LOG_LEVEL", "INFO").upper()
@@ -284,6 +313,7 @@ def main():
     controller = Controller(config_path)
     signal.signal(signal.SIGTERM, partial(handle_signal, controller))
     signal.signal(signal.SIGINT, partial(handle_signal, controller))
+    signal.signal(signal.SIGUSR1, partial(handle_snapshot_signal, controller))
     controller.run()
 
 

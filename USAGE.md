@@ -42,7 +42,50 @@ black>=22.0.0      # Code formatting
 flake8>=4.0.0      # Code linting
 ```
 
-## 📊 Monitoring & Analysis Tools
+## � On-Demand Snapshots and Shutdown Dumps
+
+AOD produces a full-system bundle (every configured quick action + a snapshot
+of every configured long capture) in two situations beyond normal anomaly
+detection:
+
+1. **Manual snapshot** — send `SIGUSR1` to the controller daemon.
+2. **Shutdown dump** — automatic when the service stops (SIGTERM / SIGINT),
+   so you always get one last bundle even if no anomaly fired.
+
+Both land in `<aod_output_dir>/batches/` alongside anomaly bundles:
+
+| Trigger        | Quick-action tarball                        | Capture tarball (per protocol)                       |
+| -------------- | ------------------------------------------- | ---------------------------------------------------- |
+| SIGUSR1        | `aod_quick_<ts>_aod_snapshot.tar.zst`       | `aod_capture_<ts>_aod_snapshot_<proto>.tar.zst`      |
+| Service stop   | `aod_quick_<ts>_aod_shutdown.tar.zst`       | `aod_capture_<ts>_aod_shutdown_<proto>.tar.zst`      |
+
+### Sending SIGUSR1
+
+Use `--kill-whom=main` so systemd only signals the controller, not the whole
+cgroup:
+
+```bash
+sudo systemctl kill --kill-whom=main -s SIGUSR1 aodv2
+```
+
+Or signal the PID directly:
+
+```bash
+sudo kill -USR1 "$(systemctl show -p MainPID --value aodv2)"
+```
+
+### Notes
+
+- `watch_interval_sec` from the config drives the lookback window for
+  `journalctl` / `dmesg` in **both** anomaly and snapshot bundles. If you want
+  more journal context in manual snapshots, raise it.
+- A `SIGUSR1` received during shutdown is ignored to avoid racing the shutdown
+  dump.
+- If a long-capture supervisor is in shutdown and drops a queued snapshot, you
+  will see a `WARNING` from `LongCapture` naming the dropped `batch_id`. The
+  matching `aod_quick_<batch_id>.tar.zst` is still written.
+
+## �📊 Monitoring & Analysis Tools
 
 The AODv2 system includes several standalone tools for performance monitoring and data analysis.
 
