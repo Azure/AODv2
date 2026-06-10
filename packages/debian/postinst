@@ -1,8 +1,19 @@
 #!/bin/sh
 set -e
 
-# Enable and start the systemd service for the Linux diagnostics controller daemon
-systemctl enable aodv2.service || true
-systemctl start aodv2.service || true
+case "$1" in
+    configure)
+        # Build/refresh the venv from the in-tree pyproject.toml.
+        rm -rf /opt/aodv2/venv
+        /usr/bin/python3 -m venv /opt/aodv2/venv
+        /opt/aodv2/venv/bin/pip install --upgrade pip
+        /opt/aodv2/venv/bin/pip install /opt/aodv2 || {
+            echo "venv build failed" >&2
+            exit 1
+        }
+        ;;
+esac
 
-echo "Linux diagnostics controller daemon has been installed and started."
+#DEBHELPER#
+
+exit 0

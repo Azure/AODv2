@@ -13,6 +13,8 @@ src/bin/
 rpms/
 rpm/
 rpmbuild/
+debbuild/
+debs/
 tmp/
 develop-eggs/
 dist/
