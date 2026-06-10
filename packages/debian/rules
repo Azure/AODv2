@@ -1,26 +1,25 @@
 #!/usr/bin/make -f
 
+export DH_VERBOSE = 1
+
 %:
-    dh $@
+	dh $@
+
+# The BPF binaries under src/bin/ are produced by the top-level
+# Makefile before packaging. Nothing to do here.
+override_dh_auto_build:
+
+override_dh_auto_test:
 
 override_dh_auto_install:
-    # Install the Python package
-    python3 setup.py install --root=$(DESTDIR)
+	# Application tree under /opt/aodv2
+	install -d -m 0755 debian/aodv2/opt/aodv2
+	cp -a src debian/aodv2/opt/aodv2/src
+	install -m 0644 pyproject.toml debian/aodv2/opt/aodv2/pyproject.toml
 
-    # Install the systemd service file
-    install -D -m 644 src/linux_diagnostics.service $(DESTDIR)/lib/systemd/system/linux_diagnostics.service
+	# Configuration (auto-detected as conffile because it lives under /etc)
+	install -D -m 0644 config/config.yaml debian/aodv2/etc/aodv2/config.yaml
 
-    # Install the configuration file
-    install -D -m 644 config/config.yaml $(DESTDIR)/etc/linux_diagnostics/config.yaml
-
-    # Install the controller script
-    install -D -m 755 src/controller $(DESTDIR)/usr/bin/linux_diagnostics_controller
-
-    # Ensure the output directory exists
-    mkdir -p $(DESTDIR)/var/log/linux_diagnostics
-
-override_dh_systemd_enable:
-    dh_systemd_enable -p$(package) linux_diagnostics.service
-
-override_dh_systemd_start:
-    dh_systemd_start -p$(package) linux_diagnostics.service
+	# systemd unit (dh_installsystemd picks it up under lib/systemd/system)
+	install -D -m 0644 aodv2.service \
+	    debian/aodv2/lib/systemd/system/aodv2.service

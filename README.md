@@ -24,7 +24,7 @@ python3 --version
 
 # Clone repository
 git clone <repository-url>
-cd linux_diagnostics
+cd aodv2
 
 # Install dependencies
 pip3 install -r requirements.txt
@@ -96,7 +96,7 @@ For detailed architecture information, see the [Architecture Guide](docs/ARCHITE
 ## 📁 Project Structure
 
 ```
-linux_diagnostics/
+aodv2/
 ├── src/                          # Core application source code
 │   ├── Controller.py             # Main service controller and orchestrator
 │   ├── AnomalyWatcher.py         # Anomaly detection engine
@@ -123,7 +123,7 @@ linux_diagnostics/
 ├── tests/                        # Test suite for the application
 │   ├── test_controller.py        # Unit tests for the Controller
 │   └── ...                       # Other unit and integration tests
-├── linux_diagnostics.service     # Systemd service definition file
+├── aodv2.service                 # Systemd service definition file
 ├── Makefile                      # Build automation for packages and code quality
 ├── pyproject.toml                # Python project configuration (PEP 621)
 ├── USAGE.md                      # Detailed usage and configuration guide

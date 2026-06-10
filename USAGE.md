@@ -209,7 +209,7 @@ pytest tests/
 **Currently, the project lacks a dedicated integration testing suite.** This is a critical area for future improvement.
 
 Integration tests would verify that the components work together as expected in a realistic environment. A typical test case would involve:
-1.  Starting the `linux_diagnostics` service.
+1.  Starting the `aodv2` service.
 2.  Using a workload to trigger a specific anomaly (e.g., high latency).
 3.  Asserting that the `AnomalyWatcher` correctly detects the anomaly.
 4.  Verifying that the `EventDispatcher` triggers the configured `QuickActions`.

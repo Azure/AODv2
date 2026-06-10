@@ -1,10 +1,6 @@
 #!/bin/sh
 set -e
 
-# Stop the systemd service for the Linux diagnostics controller daemon
-systemctl stop linux_diagnostics.service || true
-
-# Disable the systemd service to prevent it from starting on boot
-systemctl disable linux_diagnostics.service || true
+#DEBHELPER#
 
 exit 0

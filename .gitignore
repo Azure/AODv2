@@ -9,6 +9,13 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+src/bin/
+rpms/
+rpm/
+rpmbuild/
+debbuild/
+debs/
+tmp/
 develop-eggs/
 dist/
 downloads/
