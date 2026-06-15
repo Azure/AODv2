@@ -58,3 +58,9 @@ CAPTURE_REQUIRED_FLAGS = {
     "tcpdump": frozenset({"-C", "-W"}),
     "trace-cmd": frozenset({"-e"}),
 }
+
+# Protocol -> server-side TCP port. Single source of truth.
+PROTOCOL_SERVER_PORT = {
+    Protocol.SMB: 445,
+    Protocol.NFS: 2049,
+}

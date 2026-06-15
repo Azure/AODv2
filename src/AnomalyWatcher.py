@@ -7,8 +7,10 @@ import time
 import numpy as np
 
 from utils.anomaly_type import AnomalyType, TOOL_NAME_TO_ID
+from base.AnomalyHandlerBase import UserspaceAnomalyHandler
 from handlers.LatencyAnomalyHandler import LatencyAnomalyHandler
 from handlers.ErrorAnomalyHandler import ErrorAnomalyHandler
+from handlers.SockconnAnomalyHandler import SockconnAnomalyHandler
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +18,7 @@ logger = logging.getLogger(__name__)
 ANOMALY_HANDLER_REGISTRY = {
     AnomalyType.LATENCY: LatencyAnomalyHandler,
     AnomalyType.ERROR: ErrorAnomalyHandler,
+    AnomalyType.SOCKCONN: SockconnAnomalyHandler,
     # Add more types here as needed
 }
 
@@ -38,8 +41,21 @@ class AnomalyWatcher:
         self.interval = getattr(
             self.controller.config, "watch_interval_sec", 60
         )  # 60 seconds default
-        # name -> (handler, cfg).
-        self.handlers: dict = self._load_anomaly_handlers(controller.config)
+        all_handlers = self._load_anomaly_handlers(controller.config)
+        # Split by execution model.
+        self.ebpf_handlers: dict = {}
+        self.userspace_handlers: dict = {}
+        for name, (handler, cfg) in all_handlers.items():
+            if isinstance(handler, UserspaceAnomalyHandler):
+                self.userspace_handlers[name] = (handler, cfg)
+            else:
+                self.ebpf_handlers[name] = (handler, cfg)
+        if __debug__:
+            logger.info(
+                "AnomalyWatcher loaded handlers: ebpf=%s userspace=%s",
+                list(self.ebpf_handlers),
+                list(self.userspace_handlers),
+            )
 
     def _load_anomaly_handlers(self, config) -> dict:
         handler_map = {}
@@ -75,7 +91,14 @@ class AnomalyWatcher:
             global events_by_tool
 
         while not self.controller.stop_event.is_set():
-            batch = self.controller.eventQueue.get(True)
+            # Bound the wait so userspace probes still tick even when
+            # the eventQueue is idle.
+            try:
+                batch = self.controller.eventQueue.get(timeout=self.interval)
+            except queue.Empty:
+                self._dispatch_userspace_handlers()
+                continue
+
             if batch is None:
                 self.controller.eventQueue.task_done()
                 break  # sentinel
@@ -107,7 +130,7 @@ class AnomalyWatcher:
                     total_count,
                 )
 
-            for anomaly_name, (handler, anomaly_cfg) in self.handlers.items():
+            for anomaly_name, (handler, anomaly_cfg) in self.ebpf_handlers.items():
                 tool_id = TOOL_NAME_TO_ID[anomaly_cfg.tool]
                 masked_batch = batch[batch["tool"] == bytes([tool_id])]
 
@@ -151,6 +174,9 @@ class AnomalyWatcher:
             self.controller.eventQueue.task_done()
             if sentinel_found:
                 break
+            # Userspace probes run after the eBPF batch dispatch and before
+            # the interval sleep. Each handler is self-contained.
+            self._dispatch_userspace_handlers()
             # Sleep on stop_event so shutdown isn't blocked for `interval` seconds.
             if self.controller.stop_event.wait(self.interval):
                 break
@@ -171,6 +197,32 @@ class AnomalyWatcher:
                 total_anomalies_detected,
                 avg_latency_ms,
             )
+
+    def _dispatch_userspace_handlers(self) -> None:
+        """Tick every userspace handler once. Handler exceptions are isolated:
+        a misbehaving probe disables itself for this tick but does not affect
+        siblings or the eBPF dispatch path."""
+        for anomaly_name, (handler, anomaly_cfg) in self.userspace_handlers.items():
+            try:
+                detected = handler.tick()
+            except Exception:
+                logger.exception(
+                    "Userspace handler for '%s' raised; skipping this tick",
+                    anomaly_name,
+                )
+                continue
+            if not detected:
+                continue
+            action = self._generate_action(anomaly_name, anomaly_cfg)
+            logger.critical(
+                "AOD detected userspace anomaly: %s at UTC time %s",
+                anomaly_name,
+                time.strftime(
+                    "%Y-%m-%d %H:%M:%S",
+                    time.gmtime(action["timestamp"] / 1e9),
+                ),
+            )
+            self.controller.anomalyActionQueue.put(action)
 
     def _generate_action(self, anomaly_key, anomaly_cfg) -> dict:
         """Generate an action based on the detected anomaly. anomaly_key is the

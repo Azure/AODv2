@@ -4,14 +4,13 @@ import os
 import shutil
 
 from base.LongCapture import LongCapture
-from utils.anomaly_type import Protocol
+from utils.anomaly_type import Protocol, PROTOCOL_SERVER_PORT
 
 # Protocol -> tcpdump BPF filter tokens. Kept as a list so subprocess receives
 # them as discrete argv entries (tcpdump concatenates trailing non-flag args
 # into the filter expression).
 _PROTOCOL_FILTER = {
-    Protocol.SMB: ["port", "445"],
-    Protocol.NFS: ["port", "2049"],
+    proto: ["port", str(port)] for proto, port in PROTOCOL_SERVER_PORT.items()
 }
 
 _DEFAULT_IFACE = "any"

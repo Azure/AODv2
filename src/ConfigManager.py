@@ -342,8 +342,7 @@ class ConfigManager:
     def _get_track_for_anomaly(
         self, anomaly_type: AnomalyType, anomaly: dict, key: AnomalyKey
     ):
-        """Dispatch to the correct track extraction function based on anomaly type.
-        """
+        """Dispatch to the correct track extraction function based on anomaly type."""
         tool = anomaly["tool"]
         if tool not in TOOL_TO_CMDS:
             raise ValueError(f"Unknown tool '{tool}' — no command set mapped.")
