@@ -17,6 +17,7 @@ class AnomalyType(Enum):
 
     LATENCY = "latency"
     ERROR = "error"
+    SOCKCONN = "sockconn"
     # Synthetic types paired with Protocol.AOD for full-system dumps.
     SNAPSHOT = "snapshot"
     SHUTDOWN = "shutdown"

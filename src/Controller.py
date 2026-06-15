@@ -248,17 +248,29 @@ class Controller:
             logger.info("Starting tools: %s", tool_names)
         for tool_name in tool_names:
             cmd_builder = self.tool_cmd_builders.get(tool_name)
-            if cmd_builder:
-                t = threading.Thread(
-                    target=self._supervise_process,
-                    args=(tool_name, lambda tn=tool_name: cmd_builder(tn)),
-                    name=f"{tool_name}_Supervisor",
-                    daemon=True,
+            if cmd_builder is None:
+                # Userspace tools (e.g. `ss`) are driven by AnomalyWatcher,
+                # not by the process supervisor.
+                logger.debug(
+                    "No process-supervisor entry for tool '%s'; skipping",
+                    tool_name,
                 )
-                t.start()
-                self.threads.append(t)
-            else:
-                logger.warning("No command builder defined for tool '%s'", tool_name)
+                continue
+            t = threading.Thread(
+                target=self._supervise_process,
+                # Both `tool_name` and `cmd_builder` MUST be bound as default
+                # args. Closing over either by name would late-bind to the
+                # final loop iteration's value and crash when the thread
+                # finally runs the lambda.
+                args=(
+                    tool_name,
+                    lambda tn=tool_name, cb=cmd_builder: cb(tn),
+                ),
+                name=f"{tool_name}_Supervisor",
+                daemon=True,
+            )
+            t.start()
+            self.threads.append(t)
 
         self._supervise_thread("EventDispatcher", self.event_dispatcher.run)
         self._supervise_thread("AnomalyWatcher", self.anomaly_watcher.run)

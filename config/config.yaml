@@ -20,6 +20,13 @@ anomalies:
         smbinfo:
         syslogs:
         tcpdump: ["-s", "65536", "-B", "10240", "-C", "2", "-W", "100"]
+    sockconn:
+      tool: "ss"
+      actions:
+        dmesg:
+        journalctl:
+        stats:
+        tcpdump:  ["-s", "65536", "-B", "10240", "-C", "2", "-W", "100"]
 
   nfs:
     latency:
@@ -32,6 +39,10 @@ anomalies:
         journalctl:
         syslogs:
         trace-cmd: ["-e", "nfs", "-e", "nfs4", "-e", "sunrpc", "-b", "1024"]
+    sockconn:
+      tool: "ss"
+      actions:
+        dmesg:
 
 cleanup:
   cleanup_interval_sec: 60     # Interval in seconds to run cleanup

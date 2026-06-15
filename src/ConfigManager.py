@@ -22,6 +22,7 @@ TOOL_TO_CMDS = {
     "smbiosnoop": ALL_SMB_CMDS,
     "nfsslower": ALL_NFS_CMDS,
     "nfsiosnoop": ALL_NFS_CMDS,
+    "ss": None,  # ss doesn't have a fixed command set like the SMB/NFS tools
 }
 VALID_TRACKING_MODES = {"all", "trackonly", "excludeonly"}
 
@@ -176,11 +177,7 @@ class ConfigManager:
             for anomaly_name, anomaly in anomaly_types.items():
                 anomaly_type = AnomalyType(anomaly_name.strip().lower())
                 key = AnomalyKey(protocol, anomaly_type)
-                track = self._get_track_for_anomaly(anomaly_type, anomaly)
-                if not track or (isinstance(track, dict) and len(track) == 0):
-                    raise ValueError(
-                        f"No items to track for anomaly '{key}' after applying config logic."
-                    )
+                track = self._get_track_for_anomaly(anomaly_type, anomaly, key)
                 quick_actions, captures = self._parse_actions(
                     anomaly.get("actions"), key
                 )
@@ -188,7 +185,7 @@ class ConfigManager:
                     type=anomaly_name,
                     tool=anomaly["tool"],
                     protocol=protocol.value,
-                    acceptable_count=anomaly["acceptable_count"],
+                    acceptable_count=anomaly.get("acceptable_count", 0),
                     default_threshold_ms=anomaly.get("default_threshold_ms"),
                     track=track,
                     quick_actions=quick_actions,
@@ -342,15 +339,27 @@ class ConfigManager:
             cmd_lookup,
         )
 
-    def _get_track_for_anomaly(self, anomaly_type: AnomalyType, anomaly: dict):
-        """Dispatch to the correct track extraction function based on anomaly type."""
+    def _get_track_for_anomaly(
+        self, anomaly_type: AnomalyType, anomaly: dict, key: AnomalyKey
+    ):
+        """Dispatch to the correct track extraction function based on anomaly type.
+        """
         tool = anomaly["tool"]
-        cmd_lookup = TOOL_TO_CMDS.get(tool)
-        if cmd_lookup is None:
+        if tool not in TOOL_TO_CMDS:
             raise ValueError(f"Unknown tool '{tool}' — no command set mapped.")
+        cmd_lookup = TOOL_TO_CMDS[tool]
 
         if anomaly_type == AnomalyType.LATENCY:
-            return self._get_latency_track_cmds(anomaly, cmd_lookup)
+            track = self._get_latency_track_cmds(anomaly, cmd_lookup)
+            if not track:
+                raise ValueError(
+                    f"No items to track for anomaly '{key}' after applying config logic."
+                )
+            return track
+        elif anomaly_type == AnomalyType.SOCKCONN:
+            # Userspace probe; AnomalyWatcher polls ss/proc each tick and
+            # the handler diffs the state. No per-command tracking knobs.
+            return {}
         elif anomaly_type == AnomalyType.ERROR:
             # return self._get_error_track_cmds(anomaly) --- IGNORE ---
             raise NotImplementedError("Error anomaly type is not supported yet.")
