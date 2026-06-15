@@ -6,6 +6,7 @@ import ctypes
 import errno
 import logging
 import os
+import time
 
 import numpy as np
 
@@ -45,11 +46,7 @@ class EventDispatcher:
     def __init__(self, controller):
         """Initialize the EventDispatcher."""
         self.controller = controller
-        self._ctx = _shim.rb_open(RINGBUF_PINNED)
-        if not self._ctx:
-            raise RuntimeError(
-                f"Failed to open pinned ring buffer at {RINGBUF_PINNED.decode()}"
-            )
+        self._ctx = None  # Lazily Create
         # Scratch buffer reused across polls. Sized to the kernel ringbuf
         self._scratch = np.empty(RB_MAX_RECORDS, dtype=event_dtype)
         if __debug__:
@@ -59,8 +56,28 @@ class EventDispatcher:
                 RB_MAX_RECORDS,
             )
 
+    def _open_ringbuf(self, timeout_sec: int = 7) -> None:
+        """Open the ring buffer context with a timeout. Raises TimeoutError on failure."""
+        if self._ctx:
+            return  # already open
+
+        deadline = time.monotonic() + timeout_sec
+        while not self.controller.stop_event.is_set():
+            self._ctx = _shim.rb_open(RINGBUF_PINNED)
+            if self._ctx:
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Failed to open ring buffer at {RINGBUF_PINNED.decode()} within {timeout_sec} seconds"
+                )
+            if self.controller.stop_event.wait(timeout=0.2):
+                return
+
     def run(self) -> None:
         """Poll the BPF ring buffer, drain events, and forward to eventQueue."""
+        self._open_ringbuf()
+        if not self._ctx:
+            return
         total_events_processed = 0
         batch_count = 0
         if __debug__:

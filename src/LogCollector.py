@@ -25,7 +25,10 @@ _CAPTURE_CLASSES = {
     "trace-cmd": TraceCmdCapture,
 }
 
-LONG_CAPTURE_RESTART_DELAY_SEC = 1  # Time to wait after stopping a capture before restarting it.
+LONG_CAPTURE_RESTART_DELAY_SEC = (
+    1  # Time to wait after stopping a capture before restarting it.
+)
+
 
 class LogCollector:
 
@@ -170,9 +173,7 @@ class LogCollector:
         else:
             handlers = self.handlers.get(anomaly_key, [])
             cap = self.captures.get(anomaly_key.protocol)
-            capture_items = (
-                [(anomaly_key.protocol, cap)] if cap is not None else []
-            )
+            capture_items = [(anomaly_key.protocol, cap)] if cap is not None else []
 
         if not handlers and not capture_items:
             logger.warning(
@@ -186,9 +187,7 @@ class LogCollector:
         # tarball path itself. For full-system snapshots we suffix the
         # protocol so each capture's aod_capture_<batch_id> tarball is unique.
         for proto, capture in capture_items:
-            cap_batch_id = (
-                f"{batch_id}_{proto.value}" if is_snapshot else batch_id
-            )
+            cap_batch_id = f"{batch_id}_{proto.value}" if is_snapshot else batch_id
             capture.snapshot(cap_batch_id)
 
         quick_tar_path = None

@@ -153,18 +153,14 @@ class LongCapture(ABC):
                                 tar_path,
                             )
                         except Exception:
-                            logger.exception(
-                                "Snapshot bundling failed at shutdown"
-                            )
+                            logger.exception("Snapshot bundling failed at shutdown")
                     break
 
                 if pending_snap is not None:
                     batch_id = pending_snap
                     await self._stop()
                     try:
-                        tar_path = await asyncio.to_thread(
-                            self._bundle, batch_id
-                        )
+                        tar_path = await asyncio.to_thread(self._bundle, batch_id)
                         logger.info(
                             "%s snapshot bundled: %s", self.tool_name, tar_path
                         )
