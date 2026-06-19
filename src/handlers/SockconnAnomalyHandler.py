@@ -12,7 +12,7 @@ per tick.
 
 import logging
 from base.AnomalyHandlerBase import UserspaceAnomalyHandler
-from utils.anomaly_type import Protocol, PROTOCOL_SERVER_PORT
+from utils.anomaly_type import PROTOCOL_SERVER_PORT
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +28,7 @@ class SockconnAnomalyHandler(UserspaceAnomalyHandler):
 
     def __init__(self, sockconn_config):
         super().__init__(sockconn_config)
-        try:
-            protocol = Protocol(self.config.protocol)
-        except ValueError as exc:
-            raise ValueError(
-                f"SockconnAnomalyHandler: unknown protocol "
-                f"'{self.config.protocol}'"
-            ) from exc
+        protocol = self.config.key.protocol
         if protocol not in PROTOCOL_SERVER_PORT:
             raise ValueError(
                 f"SockconnAnomalyHandler: no server port mapped for "
@@ -64,7 +58,7 @@ class SockconnAnomalyHandler(UserspaceAnomalyHandler):
             removed = self._prev - curr
             logger.info(
                 "Sockconn change for %s: +%d -%d (prev=%d curr=%d)",
-                self.config.protocol,
+                self.config.key.protocol.value,
                 len(added),
                 len(removed),
                 len(self._prev),

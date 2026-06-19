@@ -62,6 +62,7 @@ class Controller:
         self.tool_cmd_builders = {
             "smbslower": self._get_latency_tool_cmd,
             "nfsslower": self._get_latency_tool_cmd,
+            "nfsiosnoop": self._get_error_tool_cmd,
         }
 
         # Initialize all components
@@ -172,11 +173,30 @@ class Controller:
                 anomaly_cfg = cfg
                 break
 
-        min_threshold = min(list(anomaly_cfg.track.values()))
-        track_cmds = ",".join(str(cmd_id) for cmd_id in anomaly_cfg.track.keys())
+        track_commands = anomaly_cfg.track["track_commands"]
+        min_threshold = min(track_commands.values())
+        track_cmds = ",".join(str(cmd_id) for cmd_id in track_commands.keys())
 
         ebpf_binary_path = os.path.join(os.path.dirname(__file__), "bin", tool_name)
         return [ebpf_binary_path, "-m", str(min_threshold), "-c", track_cmds]
+
+    def _get_error_tool_cmd(self, tool_name: str) -> list[str]:
+        """Build the CLI for error eBPF tool based on its anomaly config. ConfigManager ensures that at least one of track_commands and track_errors is non-empty. Empty axis means no filter for that axis."""
+        anomaly_cfg = None
+        for cfg in self.config.anomalies.values():
+            if cfg.tool == tool_name:
+                anomaly_cfg = cfg
+                break
+
+        ebpf_binary_path = os.path.join(os.path.dirname(__file__), "bin", tool_name)
+        cmd = [ebpf_binary_path]
+        track_cmds = anomaly_cfg.track.get("track_commands", frozenset())
+        track_errs = anomaly_cfg.track.get("track_errors", frozenset())
+        if track_cmds:
+            cmd += ["-c", ",".join(str(c) for c in sorted(track_cmds))]
+        if track_errs:
+            cmd += ["-e", ",".join(str(e) for e in sorted(track_errs))]
+        return cmd
 
     def trigger_snapshot(
         self, anomaly_type: AnomalyType = AnomalyType.SNAPSHOT

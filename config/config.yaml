@@ -33,7 +33,7 @@ anomalies:
       tool: "nfsslower"
       mode: "all"              # Options: all, trackonly, excludeonly
       acceptable_count: 10     # number of commands with latency above threshold in X seconds
-      default_threshold_ms: 0 # milliseconds, by default applies to all commands
+      default_threshold_ms: 0  # milliseconds, by default applies to all commands
       actions:
         dmesg:
         journalctl:
@@ -43,6 +43,18 @@ anomalies:
       tool: "ss"
       actions:
         dmesg:
+    error:
+      tool: "nfsiosnoop"
+      acceptable_count: 5     # number of matching error events in watch_interval_sec
+      track_commands:         # leave empty to let all NFS commands through
+      track_errors:           # at least one of track_commands/track_errors must be non-empty
+        - NFS4ERR_BAD_STATEID
+        - NFS4ERR_OLD_STATEID
+      actions:
+        dmesg:
+        journalctl:
+        syslogs:
+        trace-cmd: ["-e", "nfs", "-e", "nfs4", "-e", "sunrpc", "-b", "1024"]
 
 cleanup:
   cleanup_interval_sec: 60     # Interval in seconds to run cleanup

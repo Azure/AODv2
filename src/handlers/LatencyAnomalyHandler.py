@@ -4,7 +4,7 @@ predefined thresholds for SMB commands."""
 import logging
 import numpy as np
 from base.AnomalyHandlerBase import AnomalyHandler
-from ConfigManager import TOOL_TO_CMDS
+from utils.anomaly_type import get_tool_axes
 
 logger = logging.getLogger(__name__)
 
@@ -17,14 +17,26 @@ class LatencyAnomalyHandler(AnomalyHandler):
     def __init__(self, latency_config):
         super().__init__(latency_config)
         self.acceptable_count = self.config.acceptable_count
-        cmd_set = TOOL_TO_CMDS[self.config.tool]
+        # Full protocol command set, used to size the dense threshold lookup
+        # array. Events may carry any command id even when filtering is on,
+        # so the array must cover the full id space.
+        cmd_set = get_tool_axes(
+            self.config.key.protocol,
+            self.config.key.anomaly_type,
+            self.config.tool,
+        )["track_commands"]
         lookup_size = max(cmd_set.values()) + 1
         self.threshold_lookup = np.full(lookup_size, 0, dtype=np.uint64)
-        for cmd_id, threshold in self.config.track.items():
+        for cmd_id, threshold in self.config.track["track_commands"].items():
             self.threshold_lookup[cmd_id] = threshold * 1000000
         logger.debug(
-            "LatencyAnomalyHandler initialized with %d thresholds",
-            len(self.config.track),
+            "LatencyAnomalyHandler initialized for %s/%s tool=%s "
+            "acceptable_count=%d track=%s",
+            self.config.key.protocol.value,
+            self.config.key.anomaly_type.value,
+            self.config.tool,
+            self.acceptable_count,
+            self.config.track,
         )
 
     # works only if ebpf code does filtering as per config file (i.e. ignore excluded cmds)

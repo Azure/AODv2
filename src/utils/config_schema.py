@@ -17,12 +17,16 @@ class AnomalyConfig:
     """AnomalyConfig is a dataclass that defines the configuration for an
     anomaly detection tool."""
 
-    type: str
     tool: str
-    protocol: str
+    key: AnomalyKey
     acceptable_count: int
     default_threshold_ms: Optional[int] = None
-    track: dict[int, Optional[int]] = field(default_factory=dict)
+    # Per-axis tracking. Shape varies by anomaly type - ref PROTOCOL_SPEC:
+    #   LATENCY  -> {"track_commands": dict[int, int]}    cmd_id -> threshold_ms
+    #   ERROR    -> {"track_commands": frozenset[int],
+    #                "track_errors":   frozenset[int]}    allowlists
+    #   SOCKCONN -> {}                                    no per-item knobs
+    track: dict = field(default_factory=dict)
     quick_actions: list[str] = field(default_factory=list)
     # tool name -> raw CLI args (AOD adds -w/-o and the protocol filter at runtime)
     captures: dict[str, list[str]] = field(default_factory=dict)

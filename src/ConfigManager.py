@@ -3,10 +3,10 @@
 import logging
 import warnings
 import yaml
-from utils.shared_data import ALL_SMB_CMDS, ALL_NFS_CMDS
 from utils.anomaly_type import (
     AnomalyType,
     Protocol,
+    PROTOCOL_SPEC,
     KNOWN_QUICK_ACTIONS,
     CAPTURE_TOOLS,
     CAPTURE_RESERVED_FLAGS,
@@ -16,14 +16,6 @@ from utils.config_schema import Config, AnomalyConfig, AnomalyKey
 
 logger = logging.getLogger(__name__)
 
-# Maps tool name to the command set it operates on
-TOOL_TO_CMDS = {
-    "smbslower": ALL_SMB_CMDS,
-    "smbiosnoop": ALL_SMB_CMDS,
-    "nfsslower": ALL_NFS_CMDS,
-    "nfsiosnoop": ALL_NFS_CMDS,
-    "ss": None,  # ss doesn't have a fixed command set like the SMB/NFS tools
-}
 VALID_TRACKING_MODES = {"all", "trackonly", "excludeonly"}
 
 
@@ -140,26 +132,28 @@ class ConfigManager:
         capture tool, but they must agree on the CLI args since one process
         serves them all."""
         # tool -> (protocol, args)
-        tool_binding: dict[str, tuple[str, list[str]]] = {}
+        tool_binding: dict[str, tuple[Protocol, list[str]]] = {}
         for key, cfg in anomalies.items():
             for tool, args in cfg.captures.items():
                 bound = tool_binding.get(tool)
                 if bound is None:
-                    tool_binding[tool] = (cfg.protocol, args)
+                    tool_binding[tool] = (cfg.key.protocol, args)
                     continue
                 bound_proto, bound_args = bound
-                if bound_proto != cfg.protocol:
+                if bound_proto != cfg.key.protocol:
                     raise ValueError(
                         f"Capture tool '{tool}' is configured for both "
-                        f"protocol '{bound_proto}' and '{cfg.protocol}'. Each "
-                        f"capture tool may be bound to only one protocol at a time."
+                        f"protocol '{bound_proto.value}' and "
+                        f"'{cfg.key.protocol.value}'. Each capture tool may "
+                        f"be bound to only one protocol at a time."
                     )
                 if bound_args != args:
                     raise ValueError(
-                        f"Capture tool '{tool}' for protocol '{cfg.protocol}' "
-                        f"has conflicting args across anomalies: {bound_args!r} "
-                        f"vs {args!r}. A single capture process serves all "
-                        f"anomalies of one protocol, so args must match."
+                        f"Capture tool '{tool}' for protocol "
+                        f"'{cfg.key.protocol.value}' has conflicting args "
+                        f"across anomalies: {bound_args!r} vs {args!r}. A "
+                        f"single capture process serves all anomalies of one "
+                        f"protocol, so args must match."
                     )
 
     def _parse_anomalies(self, config_data: dict) -> dict[AnomalyKey, AnomalyConfig]:
@@ -175,17 +169,23 @@ class ConfigManager:
                     f"Unknown protocol '{protocol_name}'. Must be one of: {[p.value for p in Protocol]}"
                 ) from exc
             for anomaly_name, anomaly in anomaly_types.items():
-                anomaly_type = AnomalyType(anomaly_name.strip().lower())
+                try:
+                    anomaly_type = AnomalyType(anomaly_name.strip().lower())
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Unknown anomaly type '{anomaly_name}' for protocol "
+                        f"'{protocol.value}'. Must be one of: "
+                        f"{[t.value for t in AnomalyType]}"
+                    ) from exc
                 key = AnomalyKey(protocol, anomaly_type)
                 track = self._get_track_for_anomaly(anomaly_type, anomaly, key)
                 quick_actions, captures = self._parse_actions(
                     anomaly.get("actions"), key
                 )
                 anomalies[key] = AnomalyConfig(
-                    type=anomaly_name,
+                    key=key,
                     tool=anomaly["tool"],
-                    protocol=protocol.value,
-                    acceptable_count=anomaly.get("acceptable_count", 0),
+                    acceptable_count=anomaly.get("acceptable_count", 1),
                     default_threshold_ms=anomaly.get("default_threshold_ms"),
                     track=track,
                     quick_actions=quick_actions,
@@ -201,158 +201,224 @@ class ConfigManager:
         self._validate_capture_exclusivity(anomalies)
         return anomalies
 
-    def _check_codes(self, codes, all_codes, code_type):
-        """Check that codes are present in all_codes, not duplicated, and not
-        empty."""
-        seen = set()
-        for code in codes:
-            if code not in all_codes:
-                raise ValueError(f"Code {code} not found in {code_type}.")
-            if code in seen:
-                warnings.warn(
-                    f"Code {code} is duplicated in {code_type}.", UserWarning
-                )
-            seen.add(code)
-
-    def _validate_cmds(self, all_codes, track_codes, exclude_codes):
-        """Validate that track and exclude codes/cmds are present, not
-        duplicated, and not overlapping."""
-
-        # check if any track_codes are duplicated
-        self._check_codes(track_codes, all_codes, "track codes")
-
-        # check if any exclude_codes are duplicated
-        self._check_codes(exclude_codes, all_codes, "exclude codes")
-
-        # check if any track_codes are in exclude_codes
-        for code in track_codes:
-            if code in exclude_codes:
+    def _parse_latency_overrides(
+        self,
+        items,
+        cmd_lookup: dict,
+        default_ms,
+        key: AnomalyKey,
+    ) -> dict[int, int]:
+        """Resolve a list of ``{command: NAME, threshold: N}`` entries into a
+        ``{cmd_id: threshold_ms}`` dict. Validates names against ``cmd_lookup``,
+        warns on duplicates, and rejects non-numeric / negative thresholds. A
+        missing ``threshold`` falls back to ``default_ms``.
+        """
+        if not isinstance(items, list):
+            raise ValueError(
+                f"'track_commands' for {key} must be a list, got "
+                f"{type(items).__name__}"
+            )
+        out: dict[int, int] = {}
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict) or "command" not in item:
                 raise ValueError(
-                    f"Code {code} is duplicated in track and exclude codes. It is unclear if Code {code} should be tracked or excluded."
+                    f"Each track_commands entry for {key} must be a mapping "
+                    f"with a 'command' key, got {item!r}"
                 )
+            name = item["command"]
+            if name not in cmd_lookup:
+                raise ValueError(
+                    f"Unknown command '{name}' in track_commands for {key}. "
+                    f"Allowed: {sorted(cmd_lookup)}"
+                )
+            if name in seen:
+                warnings.warn(
+                    f"Command '{name}' is duplicated in track_commands for {key}.",
+                    UserWarning,
+                )
+            seen.add(name)
+            threshold = item.get("threshold", default_ms)
+            if (
+                not isinstance(threshold, (int, float))
+                or isinstance(threshold, bool)
+                or threshold < 0
+            ):
+                raise ValueError(
+                    f"Invalid threshold {threshold!r} for command '{name}' "
+                    f"in {key}; must be a number >= 0."
+                )
+            out[cmd_lookup[name]] = threshold
+        return out
 
-    def _validate_thresholds(self, track_commands):
-        """Check that all thresholds in track_commands are valid (int/float and
-        >= 0)."""
-        for command in track_commands or []:
-            if "threshold" in command:
-                threshold = command["threshold"]
-                if not isinstance(threshold, (int, float)) or threshold < 0:
-                    raise ValueError(
-                        f"Invalid threshold value in track command: {command}"
-                    )
+    def _get_latency_track_cmds(
+        self, anomaly: dict, axes: dict, key: AnomalyKey
+    ) -> dict[str, dict[int, int]]:
+        """Parse a latency anomaly's per-command threshold map.
 
-    def _validate_latency_commands(self, track_commands, exclude_commands, all_cmds):
-        """Validate latency commands for tracking and exclusion.
-        Checks for duplicates and presence using validate_cmds, and
-        checks threshold validity.
+        Returns ``{"track_commands": {cmd_id: threshold_ms}}``
+
+        Mode dictates which cmds are tracked and at what thresholds:
+          - ``trackonly``    -> only listed commands are tracked
+          - ``excludeonly``  -> all commands tracked at default_threshold_ms
+                                except those listed in exclude_commands
+          - ``all``          -> all commands tracked at default_threshold_ms,
+                                then track_commands override thresholds, then
+                                exclude_commands are dropped
         """
-        track_cmd_names = [
-            cmd["command"] for cmd in (track_commands or []) if "command" in cmd
-        ]
-        exclude_cmd_names = exclude_commands or []
-
-        self._validate_cmds(
-            all_codes=list(all_cmds.keys()),
-            track_codes=track_cmd_names,
-            exclude_codes=exclude_cmd_names,
-        )
-
-        self._validate_thresholds(track_commands)
-
-    def _normalize_track_and_exclude(
-        self, mode: str, track_items, exclude_items, anomaly_type: str = "anomaly"
-    ):
-        """Normalize track and exclude items based on the mode.
-        Validates mode and warns/clears the irrelevant list if needed.
-        """
+        cmd_lookup = axes["track_commands"]
+        mode = anomaly.get("mode", "all")
         if mode not in VALID_TRACKING_MODES:
             raise ValueError(
-                f"Invalid mode '{mode}' for {anomaly_type}. Must be one of: {', '.join(VALID_TRACKING_MODES)}"
+                f"Invalid mode '{mode}' for {key}. Must be one of: "
+                f"{sorted(VALID_TRACKING_MODES)}"
             )
+        default_ms = anomaly.get("default_threshold_ms", 10)
+        if (
+            not isinstance(default_ms, (int, float))
+            or isinstance(default_ms, bool)
+            or default_ms < 0
+        ):
+            raise ValueError(
+                f"'default_threshold_ms' for {key} must be a number >= 0, "
+                f"got {default_ms!r}."
+            )
+
+        track_items = anomaly.get("track_commands") or []
+        exclude_items = anomaly.get("exclude_commands") or []
         if mode == "trackonly" and exclude_items:
             warnings.warn(
-                f"{anomaly_type.capitalize()} exclude items will be ignored in trackonly mode."
+                f"exclude_commands ignored in trackonly mode for {key}.",
+                UserWarning,
             )
             exclude_items = []
         elif mode == "excludeonly" and track_items:
             warnings.warn(
-                f"{anomaly_type.capitalize()} track items will be ignored in excludeonly mode."
+                f"track_commands ignored in excludeonly mode for {key}.",
+                UserWarning,
             )
             track_items = []
-        return track_items, exclude_items
 
-    def _build_latency_command_map(
-        self, mode, track_commands, exclude_commands, default_threshold, cmd_lookup
-    ):
-        """Build the command map for latency anomaly detection.
-        cmd_lookup: the protocol's monitoring command name->id mapping (e.g. ALL_SMB_CMDS).
-        """
-
-        def get_threshold(cmd_dict):
-            return cmd_dict.get("threshold", default_threshold)
-
-        all_cmds = list(cmd_lookup.values())
-        command_map = {}
-        exclude_command_ids = [cmd_lookup[cmd] for cmd in exclude_commands]
+        overrides = self._parse_latency_overrides(
+            track_items, cmd_lookup, default_ms, key
+        )
+        excluded_ids = self._parse_axis_for_anomaly(
+            exclude_items, cmd_lookup, "exclude_commands", key
+        )
+        overlap = excluded_ids & overrides.keys()
+        if overlap:
+            names = sorted(
+                name for name, cid in cmd_lookup.items() if cid in overlap
+            )
+            raise ValueError(
+                f"Command(s) {names} appear in both track_commands and "
+                f"exclude_commands for {key}; cannot tell whether to track "
+                f"or exclude."
+            )
 
         if mode == "trackonly":
-            for cmd_dict in track_commands:
-                cmd_id = cmd_lookup[cmd_dict["command"]]
-                command_map[cmd_id] = get_threshold(cmd_dict)
-        elif mode == "excludeonly":
-            for cmd_id in all_cmds:
-                if cmd_id not in exclude_command_ids:
-                    command_map[cmd_id] = default_threshold
-        else:  # mode == "all"
-            for cmd_id in all_cmds:
-                command_map[cmd_id] = default_threshold
-            for cmd_dict in track_commands:
-                cmd_id = cmd_lookup[cmd_dict["command"]]
-                command_map[cmd_id] = get_threshold(cmd_dict)
-            for cmd_id in exclude_command_ids:
-                command_map.pop(cmd_id, None)
-        return command_map
+            return {"track_commands": overrides}
+        out: dict[int, int] = {cid: default_ms for cid in cmd_lookup.values()}
+        out.update(overrides)
+        for cid in excluded_ids:
+            out.pop(cid, None)
+        return {"track_commands": out}
 
-    def _get_latency_track_cmds(self, anomaly, cmd_lookup):
-        """Parse and validate latency anomaly tracking commands from the
-        config."""
-        track_commands = anomaly.get("track_commands", []) or []
-        exclude_commands = anomaly.get("exclude_commands", []) or []
-        latency_mode = anomaly.get("mode", "all")
-        default_threshold = anomaly.get("default_threshold_ms", 10)
+    def _parse_axis_for_anomaly(
+        self, names, lookup, axis_name: str, key: AnomalyKey
+    ) -> frozenset[int]:
+        """Resolve a list of human-readable command/error names to their numeric IDs using
+        `lookup`."""
+        if not names:
+            return frozenset()
+        if not isinstance(names, list):
+            raise ValueError(
+                f"'{axis_name}' for {key} must be a list of names, got "
+                f"{type(names).__name__}"
+            )
+        ids: set[int] = set()
+        seen: set[str] = set()
+        for name in names:
+            if name in seen:
+                warnings.warn(
+                    f"Name '{name}' is duplicated in '{axis_name}' for {key}.",
+                    UserWarning,
+                )
+            seen.add(name)
+            if name not in lookup:
+                raise ValueError(
+                    f"Unknown name '{name}' in '{axis_name}' for {key}. "
+                    f"Allowed: {sorted(lookup)}"
+                )
+            ids.add(lookup[name])
+        return frozenset(ids)
 
-        # Validate latency mode constraints
-        track_commands, exclude_commands = self._normalize_track_and_exclude(
-            latency_mode, track_commands, exclude_commands, "latency"
-        )
+    def _get_error_track_cmds(
+        self, anomaly, axes: dict, key: AnomalyKey
+    ) -> dict[str, frozenset[int]]:
+        """Parse error anomaly commands and errors (axes) from the config. Returns a per-axis frozenset of IDs.
 
-        # Validate commands and thresholds
-        self._validate_latency_commands(track_commands, exclude_commands, cmd_lookup)
+        Axes accepted are those declared in PROTOCOL_SPEC for this tool
+        (nfsiosnoop -> track_commands + track_errors). An empty axis
+        means "no allowlist filter" in the BPF program. At least one axis
+        must be non-empty.
+        """
+        track: dict[str, frozenset[int]] = {}
+        for axis_name, lookup in axes.items():
+            track[axis_name] = self._parse_axis_for_anomaly(
+                anomaly.get(axis_name), lookup, axis_name, key
+            )
+        if not any(track.values()):
+            raise ValueError(
+                f"Error anomaly '{key}' must specify at least one entry in "
+                f"one of: {sorted(axes)}."
+            )
+        return track
 
-        # Build command map
-        return self._build_latency_command_map(
-            latency_mode,
-            track_commands,
-            exclude_commands,
-            default_threshold,
-            cmd_lookup,
-        )
+    def _resolve_tool_axes(
+        self,
+        anomaly_type: AnomalyType,
+        tool: str,
+        key: AnomalyKey,
+    ) -> dict:
+        """Validate (protocol, anomaly_type, tool) against the capability
+        matrix and return the axes dict for the tool.
+        """
+        type_map = PROTOCOL_SPEC.get(key.protocol)
+        if type_map is None:
+            raise ValueError(
+                f"Protocol '{key.protocol.value}' is not supported (anomaly '{key}')."
+            )
+        tool_map = type_map.get(anomaly_type)
+        if tool_map is None:
+            allowed = sorted(t.value for t in type_map)
+            raise ValueError(
+                f"Anomaly type '{anomaly_type.value}' is not supported for "
+                f"protocol '{key.protocol.value}' (anomaly '{key}'). "
+                f"Allowed types: {allowed}."
+            )
+        axes = tool_map.get(tool)
+        if axes is None:
+            raise ValueError(
+                f"Tool '{tool}' cannot source {key.protocol.value}/"
+                f"{anomaly_type.value} anomalies (anomaly '{key}'). "
+                f"Allowed tools: {sorted(tool_map)}."
+            )
+        return axes
 
     def _get_track_for_anomaly(
         self, anomaly_type: AnomalyType, anomaly: dict, key: AnomalyKey
     ):
         """Dispatch to the correct track extraction function based on anomaly type."""
         tool = anomaly["tool"]
-        if tool not in TOOL_TO_CMDS:
-            raise ValueError(f"Unknown tool '{tool}' — no command set mapped.")
-        cmd_lookup = TOOL_TO_CMDS[tool]
+        axes = self._resolve_tool_axes(anomaly_type, tool, key)
 
         if anomaly_type == AnomalyType.LATENCY:
-            track = self._get_latency_track_cmds(anomaly, cmd_lookup)
-            if not track:
+            track = self._get_latency_track_cmds(anomaly, axes, key)
+            if not track["track_commands"]:
                 raise ValueError(
-                    f"No items to track for anomaly '{key}' after applying config logic."
+                    f"Latency anomaly '{key}' must specify at least one "
+                    f"command in track_commands or exclude_commands."
                 )
             return track
         elif anomaly_type == AnomalyType.SOCKCONN:
@@ -360,7 +426,6 @@ class ConfigManager:
             # the handler diffs the state. No per-command tracking knobs.
             return {}
         elif anomaly_type == AnomalyType.ERROR:
-            # return self._get_error_track_cmds(anomaly) --- IGNORE ---
-            raise NotImplementedError("Error anomaly type is not supported yet.")
+            return self._get_error_track_cmds(anomaly, axes, key)
         else:
             raise ValueError(f"No handler for anomaly type: {anomaly_type.value}")

@@ -6,21 +6,11 @@ import queue
 import time
 import numpy as np
 
-from utils.anomaly_type import AnomalyType, TOOL_NAME_TO_ID
+from utils.anomaly_type import TOOL_NAME_TO_ID
 from base.AnomalyHandlerBase import UserspaceAnomalyHandler
-from handlers.LatencyAnomalyHandler import LatencyAnomalyHandler
-from handlers.ErrorAnomalyHandler import ErrorAnomalyHandler
-from handlers.SockconnAnomalyHandler import SockconnAnomalyHandler
+from utils.anomaly_type import ANOMALY_HANDLER_REGISTRY
 
 logger = logging.getLogger(__name__)
-
-# Maps enum to anomaly handler classes.
-ANOMALY_HANDLER_REGISTRY = {
-    AnomalyType.LATENCY: LatencyAnomalyHandler,
-    AnomalyType.ERROR: ErrorAnomalyHandler,
-    AnomalyType.SOCKCONN: SockconnAnomalyHandler,
-    # Add more types here as needed
-}
 
 total_count = 0
 events_by_tool = {}
@@ -59,24 +49,14 @@ class AnomalyWatcher:
 
     def _load_anomaly_handlers(self, config) -> dict:
         handler_map = {}
-        for anomaly_name, anomaly_cfg in config.anomalies.items():
-            try:
-                anomaly_type_enum = AnomalyType(anomaly_cfg.type.strip().lower())
-            except ValueError:
-                logger.warning(
-                    "Unknown anomaly type '%s' for '%s'",
-                    anomaly_cfg.type,
-                    anomaly_name,
-                )
-                continue
-
-            handler_class = ANOMALY_HANDLER_REGISTRY.get(anomaly_type_enum)
+        for anomaly_key, anomaly_cfg in config.anomalies.items():
+            handler_class = ANOMALY_HANDLER_REGISTRY.get(anomaly_key.anomaly_type)
             if handler_class:
-                handler_map[anomaly_name] = (handler_class(anomaly_cfg), anomaly_cfg)
+                handler_map[anomaly_key] = (handler_class(anomaly_cfg), anomaly_cfg)
             else:
                 logger.warning(
                     "No handler registered for anomaly type '%s'",
-                    anomaly_cfg.type,
+                    anomaly_key.anomaly_type.value,
                 )
         return handler_map
 

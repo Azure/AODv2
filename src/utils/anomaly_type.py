@@ -1,4 +1,5 @@
 from enum import Enum
+from utils.shared_data import ALL_SMB_CMDS, ALL_NFS_CMDS, ALL_NFS_ERRS
 
 
 class Protocol(Enum):
@@ -27,9 +28,8 @@ class AnomalyType(Enum):
 # Maps eBPF tool name to the tool ID byte it writes into events
 TOOL_NAME_TO_ID = {
     "smbslower": 0,
-    "nfsslower": 1,
-    "smbiosnoop": -1,  # fill correct value
-    "nfsiosnoop": -1,  # fill correct value
+    "nfsslower": 10,
+    "nfsiosnoop": 11,
     # Add more as needed
 }
 
@@ -63,4 +63,66 @@ CAPTURE_REQUIRED_FLAGS = {
 PROTOCOL_SERVER_PORT = {
     Protocol.SMB: 445,
     Protocol.NFS: 2049,
+}
+
+# This is the single source of truth for:
+#   - which protocols AOD knows
+#   - which anomaly types each protocol supports
+#   - which tools can source each anomaly type
+#   - which filter axes each tool accepts and the lookup table for each axis
+PROTOCOL_SPEC = {
+    Protocol.SMB: {
+        AnomalyType.LATENCY: {
+            "smbslower": {"track_commands": ALL_SMB_CMDS},
+        },
+        AnomalyType.SOCKCONN: {
+            "ss": {},
+        },
+    },
+    Protocol.NFS: {
+        AnomalyType.LATENCY: {
+            "nfsslower": {"track_commands": ALL_NFS_CMDS},
+        },
+        AnomalyType.ERROR: {
+            "nfsiosnoop": {
+                "track_commands": ALL_NFS_CMDS,
+                "track_errors": ALL_NFS_ERRS,
+            },
+        },
+        AnomalyType.SOCKCONN: {
+            "ss": {},
+        },
+    },
+}
+
+# Maps enum to anomaly handler classes. Imports live at the bottom so this
+# module finishes defining `get_tool_axes` (consumed by handlers) before the
+# handler modules are loaded, breaking what would otherwise be a circular
+# import.
+
+
+def get_tool_axes(protocol, anomaly_type, tool: str) -> dict:
+    """Return the axes mapping for (protocol, anomaly_type, tool).
+
+    Accepts either Enum members or their string values for `protocol` and
+    `anomaly_type` to keep call sites (config parser, handlers) terse.
+    Raises KeyError with the offending triple if the combination is not
+    declared in PROTOCOL_SPEC.
+    """
+    if isinstance(protocol, str):
+        protocol = Protocol(protocol)
+    if isinstance(anomaly_type, str):
+        anomaly_type = AnomalyType(anomaly_type)
+    return PROTOCOL_SPEC[protocol][anomaly_type][tool]
+
+
+from handlers.LatencyAnomalyHandler import LatencyAnomalyHandler  # noqa: E402
+from handlers.ErrorAnomalyHandler import ErrorAnomalyHandler  # noqa: E402
+from handlers.SockconnAnomalyHandler import SockconnAnomalyHandler  # noqa: E402
+
+ANOMALY_HANDLER_REGISTRY = {
+    AnomalyType.LATENCY: LatencyAnomalyHandler,
+    AnomalyType.ERROR: ErrorAnomalyHandler,
+    AnomalyType.SOCKCONN: SockconnAnomalyHandler,
+    # Add more types here as needed
 }
