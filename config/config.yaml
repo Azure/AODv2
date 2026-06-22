@@ -1,4 +1,4 @@
-watch_interval_sec: 1
+watch_interval_sec: 60
 aod_output_dir: /var/log/aod
 
 anomalies:
@@ -10,7 +10,7 @@ anomalies:
       default_threshold_ms: 20 # milliseconds, by default applies to all commands
       track_commands:
         - command: SMB2_WRITE
-          threshold: 0
+          threshold: 50
       actions:
         dmesg:
         journalctl:
@@ -33,7 +33,7 @@ anomalies:
       tool: "nfsslower"
       mode: "all"              # Options: all, trackonly, excludeonly
       acceptable_count: 10     # number of commands with latency above threshold in X seconds
-      default_threshold_ms: 0  # milliseconds, by default applies to all commands
+      default_threshold_ms: 50  # milliseconds, by default applies to all commands
       actions:
         dmesg:
         journalctl:
@@ -57,9 +57,9 @@ anomalies:
         trace-cmd: ["-e", "nfs", "-e", "nfs4", "-e", "sunrpc", "-b", "1024"]
 
 cleanup:
-  cleanup_interval_sec: 60     # Interval in seconds to run cleanup
-  max_log_age_days: 2          # Maximum age of logs in days
-  max_total_log_size_mb: 50   # Maximum total size of all logs in MB
+  cleanup_interval_sec: 300     # Interval in seconds to run cleanup
+  max_log_age_days: 2           # Maximum age of logs in days
+  max_total_log_size_mb: 1024   # Maximum total size of all logs in MB
 
 audit:
   enabled: true
