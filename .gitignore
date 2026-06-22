@@ -210,4 +210,5 @@ __marimo__/
 #ignore test_files folder
 test_files/
 profiling_outputs/
+tests/_output/
 src/bin/smbsloweraod_with_cnt

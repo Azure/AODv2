@@ -101,8 +101,8 @@ class AnomalyWatcher:
             if __debug__:
                 total_count += len(batch)
                 batch_count += 1
-                if len(batch) > 0 and "latency_ns" in batch.dtype.names:
-                    total_latency += int(batch["latency_ns"].sum())
+                if len(batch) > 0 and "metric_latency_ns" in batch.dtype.names:
+                    total_latency += int(batch["metric_latency_ns"].sum())
                     latency_event_count += len(batch)
                 logger.debug(
                     "Processing batch of %d events, total count: %d",
