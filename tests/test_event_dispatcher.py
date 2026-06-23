@@ -1,9 +1,8 @@
 """Integration tests for EventDispatcher + the C ringbuf shim.
 
-Rather than mocking the ctypes shim, these tests build a parallel
-`libringbuf_shim_test.so` from the production ringbuf_shim.c source
-linked against libbpf stubs (see tests/c/). That gives end-to-end
-coverage of:
+These tests build a parallel `libringbuf_shim_test.so` from the
+production ringbuf_shim.c source linked against libbpf stubs
+(see tests/c/). That gives end-to-end coverage of:
 
   Python EventDispatcher.run  →  ctypes
                               →  C rb_poll_into
@@ -230,8 +229,8 @@ class EndToEndStressTests(_ShimTestCase):
         # path: each burst stays comfortably below this.
         d._scratch = np.empty(256, dtype=event_dtype)
 
-        num_bursts = 100
-        burst_size = 200
+        num_bursts = 1000
+        burst_size = 250
         total = num_bursts * burst_size
 
         t = threading.Thread(target=d.run, daemon=True)
