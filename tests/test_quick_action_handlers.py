@@ -347,5 +347,6 @@ class TestQuickActionOutputLayout(unittest.TestCase):
         }
         self.assertEqual(len(filenames), 7, "log_filename collision across actions")
 
+
 if __name__ == "__main__":
     unittest.main()

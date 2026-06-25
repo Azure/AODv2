@@ -473,9 +473,7 @@ class TestSuperviseProcess(unittest.TestCase):
     def test_sigkill_escalation_when_child_ignores_sigint(self):
         cmd_builder = MagicMock(return_value=["/bin/tool"])
         fake_proc = MagicMock(pid=1234, returncode=None)
-        fake_proc.wait.side_effect = subprocess.TimeoutExpired(
-            cmd="x", timeout=5
-        )
+        fake_proc.wait.side_effect = subprocess.TimeoutExpired(cmd="x", timeout=5)
 
         patches = self._common_patches(
             popen_side_effect=[fake_proc],

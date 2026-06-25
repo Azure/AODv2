@@ -40,13 +40,10 @@ from test_event_dispatcher import (  # noqa: E402
     _CEvent,
     _SKIP_REASON,
     _load_test_shim,
-    _make_controller,a
+    _make_controller,
 )
 
-
-TOTAL_EVENTS = int(
-    os.environ.get("AODV2_DISPATCHER_PRESSURE_EVENTS", "10000000")
-)
+TOTAL_EVENTS = int(os.environ.get("AODV2_DISPATCHER_PRESSURE_EVENTS", "10000000"))
 # Scratch must be >= the shim's pending capacity, mirroring the
 # production invariant (scratch=149797 >> kernel ring=2048). If it
 # isn't, the production callback `_copy_event` deliberately drops
@@ -78,7 +75,7 @@ def _produce_all(shim, total: int) -> int:
         e.task = f"task-{pid}".encode()[:TASK_COMM_LEN]
         while shim.test_queue_event(e_ref, sz) != 1:
             rejects += 1
-            time.sleep(0) # ask GIL to switch threads so the dispatcher can catch up
+            time.sleep(0)  # ask GIL to switch threads so the dispatcher can catch up
     return rejects
 
 
@@ -125,15 +122,11 @@ class DispatcherPressureTest(unittest.TestCase):
         try:
             received = self._verify_stream(ctrl, expected_total=TOTAL_EVENTS)
             producer_thread.join(timeout=30.0)
-            self.assertFalse(
-                producer_thread.is_alive(), "producer did not finish"
-            )
+            self.assertFalse(producer_thread.is_alive(), "producer did not finish")
         finally:
             ctrl.stop_event.set()
             dispatcher_thread.join(timeout=10.0)
-            self.assertFalse(
-                dispatcher_thread.is_alive(), "dispatcher did not exit"
-            )
+            self.assertFalse(dispatcher_thread.is_alive(), "dispatcher did not exit")
             d.cleanup()
 
         # After stop, the dispatcher must emit exactly one sentinel and
@@ -155,9 +148,7 @@ class DispatcherPressureTest(unittest.TestCase):
 
     # ----- helpers ---------------------------------------------------------
 
-    def _verify_stream(
-        self, ctrl, *, expected_total: int
-    ) -> dict[str, int]:
+    def _verify_stream(self, ctrl, *, expected_total: int) -> dict[str, int]:
         """Pull batches off ctrl.eventQueue and validate each in turn.
 
         Returns once exactly `expected_total` events have been seen.
@@ -221,9 +212,7 @@ class DispatcherPressureTest(unittest.TestCase):
                 expected_pids.astype(np.uint64) + 1000,
             )
             # Spot-check task on batch endpoints.
-            self.assertEqual(
-                item["task"][0], f"task-{expected_pid}".encode()
-            )
+            self.assertEqual(item["task"][0], f"task-{expected_pid}".encode())
             self.assertEqual(
                 item["task"][-1], f"task-{expected_pid + n - 1}".encode()
             )
