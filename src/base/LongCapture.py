@@ -60,6 +60,7 @@ class LongCapture(ABC):
         self._proc: asyncio.subprocess.Process | None = None
         self._snap_q: asyncio.Queue = asyncio.Queue()
         self._disabled = False
+        self._is_cooldown = False
         self._spawn_failures = 0
 
     @abstractmethod
@@ -74,23 +75,48 @@ class LongCapture(ABC):
         path is logged by the supervisor.
 
         batch_id is the same identifier LogCollector uses for the sibling
-        quick-action tarball ("<ts>_<proto>_<anomaly_type>")."""
+        quick-action tarball ("<ts>_<proto>_<anomaly_type>").
+
+        Requests are dropped if the capture is disabled (3 consecutive
+        spawn failures => no recorder available) or in cooldown (the
+        previous snapshot is still warming up the fresh recorder).
+        SHUTDOWN snapshots are subject to the same gates; callers that
+        need the shutdown bundle must wait for cooldown to clear before
+        triggering the stop."""
         if self._disabled:
-            # User should know why no aod_capture_* tarball exists for this batch_id and can correlate with the nearest successful capture bundle by timestamp prefix.
             logger.warning(
                 "%s capture for %s DROPPED snapshot %s: capture disabled. "
-                "Check the aod_capture_*<proto>* bundle closest in time for context.",
+                "There were problems spawning the capture process %d times in a row; ",
                 self.tool_name,
                 self.protocol.value,
                 batch_id,
+                self._spawn_failures,
+            )
+            return
+        if self._is_cooldown:
+            logger.warning(
+                "%s capture for %s DROPPED snapshot %s: capture is in cooldown. "
+                "for capture context check the aod_capture_*_%s.tar.zst bundle closest in time to these batch_ids.",
+                self.tool_name,
+                self.protocol.value,
+                batch_id,
+                self.protocol.value,
             )
             return
         self._snap_q.put_nowait(batch_id)
 
     async def run(self, stop_event) -> None:
         """Supervise the capture process: spawn -> wait on (process exit or
-        snapshot request) -> on snapshot, stop+bundle+restart; on unexpected
-        exit, restart after watch_interval_sec; on stop_event, stop and return."""
+        snapshot request) -> on snapshot, drain queue, stop+bundle, respawn and
+        warmup; on unexpected exit, restart after restart_delay_sec; on
+        stop_event, stop and return.
+
+        Coalesce + cooldown semantics: when a snapshot request fires, any
+        other requests already queued for this protocol are drained into the
+        same bundle (same recorder state, same tarball). _is_cooldown is set
+        before any await so subsequent snapshot() calls during stop/bundle
+        AND during the post-respawn warmup are dropped with a log line
+        pointing the operator at the bundle they share."""
         os.makedirs(self.capture_dir, exist_ok=True)
         os.makedirs(self.bundle_dir, exist_ok=True)
         live_path = os.path.join(self.capture_dir, f"cap{self.output_extension}")
@@ -120,6 +146,22 @@ class LongCapture(ABC):
                     continue
                 self._spawn_failures = 0
 
+                # If we just respawned after a bundle, hold off on accepting
+                # new snapshot requests until the fresh recorder has had
+                # restart_delay_sec to accumulate data. Without this, a
+                # snapshot landing immediately after respawn would produce a
+                # near-empty bundle. snapshot() drops requests during this
+                # window because _is_cooldown is still True.
+                if self._is_cooldown:
+                    await asyncio.sleep(self.restart_delay_sec)
+                    self._is_cooldown = False
+                    if __debug__:
+                        logger.info(
+                            "%s capture for %s ready after cooldown",
+                            self.tool_name,
+                            self.protocol.value,
+                        )
+
                 proc_wait = asyncio.create_task(self._proc.wait())
                 snap_wait = asyncio.create_task(self._snap_q.get())
                 try:
@@ -140,32 +182,62 @@ class LongCapture(ABC):
                 pending_snap = snap_wait.result() if snap_wait in done else None
 
                 if stop_wait in done:
+                    # Controller.stop() enqueues the SHUTDOWN snapshot on
+                    # LogCollector's anomalyActionQueue and immediately
+                    # sets stop_event. The to_thread waiter for stop_event
+                    # completes the moment .set() is called, but
+                    # LogCollector still has to dequeue the event and call
+                    # capture.snapshot() before snap_wait can fire. Give
+                    # that pipeline a brief grace window so the shutdown
+                    # capture context isn't lost just because stop_event
+                    # outraced the queue.
+                    if pending_snap is None:
+                        try:
+                            pending_snap = await asyncio.wait_for(
+                                self._snap_q.get(), timeout=2.0
+                            )
+                        except asyncio.TimeoutError:
+                            pending_snap = None
                     if pending_snap is not None:
-                        batch_id = pending_snap
+                        coalesced = self._drain_queue(pending_snap)
                         await self._stop()
                         try:
                             tar_path = await asyncio.to_thread(
-                                self._bundle, batch_id
+                                self._bundle, coalesced[0]
                             )
                             logger.info(
-                                "%s snapshot bundled at shutdown: %s",
+                                "%s snapshot bundled at shutdown: %s "
+                                "(coalesced %d request(s): %s)",
                                 self.tool_name,
                                 tar_path,
+                                len(coalesced),
+                                ", ".join(coalesced),
                             )
                         except Exception:
                             logger.exception("Snapshot bundling failed at shutdown")
                     break
 
                 if pending_snap is not None:
-                    batch_id = pending_snap
+                    # Drain synchronously because snapshot should not enqueue more
+                    # between the drain and until _is_cooldown.
+                    self._is_cooldown = True
+                    coalesced = self._drain_queue(pending_snap)
                     await self._stop()
                     try:
-                        tar_path = await asyncio.to_thread(self._bundle, batch_id)
+                        tar_path = await asyncio.to_thread(
+                            self._bundle, coalesced[0]
+                        )
                         logger.info(
-                            "%s snapshot bundled: %s", self.tool_name, tar_path
+                            "%s snapshot bundled: %s "
+                            "(coalesced %d request(s): %s)",
+                            self.tool_name,
+                            tar_path,
+                            len(coalesced),
+                            ", ".join(coalesced),
                         )
                     except Exception:
                         logger.exception("Snapshot bundling failed")
+
                 else:
                     logger.warning(
                         "%s capture for %s exited unexpectedly (rc=%s); "
@@ -175,8 +247,8 @@ class LongCapture(ABC):
                         self._proc.returncode,
                         self.restart_delay_sec,
                     )
+                    await asyncio.sleep(self.restart_delay_sec)
 
-                await asyncio.sleep(self.restart_delay_sec)
         except asyncio.CancelledError:
             raise
         finally:
@@ -266,6 +338,15 @@ class LongCapture(ABC):
             except ProcessLookupError:
                 pass
             await self._proc.wait()
+
+    def _drain_queue(self, first: str) -> list[str]:
+        """Pop everything currently queued into one list, including `first`
+        which was already pulled from snap_wait. Synchronous so it stays
+        atomic w.r.t. snapshot() calls in the same event loop."""
+        coalesced = [first]
+        while not self._snap_q.empty():
+            coalesced.append(self._snap_q.get_nowait())
+        return coalesced
 
     def _bundle(self, batch_id: str) -> str | None:
         files = glob.glob(os.path.join(self.capture_dir, "cap*"))
