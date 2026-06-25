@@ -21,7 +21,6 @@ via AOD_TCPDUMP_BIN so the tests do not require tcpdump/trace-cmd or root.
 import asyncio
 import os
 import queue
-import stat
 import sys
 import tarfile
 import tempfile
@@ -40,6 +39,8 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
+if str(_REPO_ROOT / "tests") not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / "tests"))
 
 from ConfigManager import ConfigManager  # noqa: E402
 from LogCollector import LogCollector  # noqa: E402
@@ -51,6 +52,7 @@ from handlers.DmesgQuickAction import DmesgQuickAction  # noqa: E402
 from utils.anomaly_type import AnomalyType, Protocol  # noqa: E402
 from utils.config_schema import AnomalyKey  # noqa: E402
 
+from conftest import install_fake_tcpdump, install_fake_tracecmd  # noqa: E402
 
 # --- helpers ---------------------------------------------------------------
 
@@ -75,11 +77,7 @@ def _bundle_entries(tar_path: Path) -> list[tuple[str, int]]:
     dctx = zstd.ZstdDecompressor()
     with open(tar_path, "rb") as f, dctx.stream_reader(f) as reader:
         with tarfile.open(fileobj=reader, mode="r|") as tar:
-            return [
-                (os.path.basename(m.name), m.size)
-                for m in tar
-                if m.isfile()
-            ]
+            return [(os.path.basename(m.name), m.size) for m in tar if m.isfile()]
 
 
 def _bundle_members(tar_path: Path) -> dict[str, int]:
@@ -108,78 +106,7 @@ def _wait_for(predicate, timeout: float, interval: float = 0.05):
 def _drain_join(thread: threading.Thread, timeout: float = 60.0) -> None:
     thread.join(timeout=timeout)
     if thread.is_alive():
-        raise AssertionError(
-            f"LogCollector thread did not exit within {timeout}s"
-        )
-
-
-# Bash stub used in place of tcpdump. Writes a non-empty `cap.pcap` to the
-# path passed via `-w`, then idles until LongCapture._stop sends SIGINT to
-# the process group.
-_FAKE_TCPDUMP_SCRIPT = """\
-#!/usr/bin/env bash
-out=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -w) out="$2"; shift 2 ;;
-    *)  shift ;;
-  esac
-done
-if [ -n "$out" ]; then
-  mkdir -p "$(dirname "$out")"
-  printf 'fake-pcap pid=%d\\n' "$$" > "$out"
-fi
-trap 'exit 0' INT TERM
-# Background `sleep` so `wait` is interruptible and the SIGINT trap fires
-# without waiting out the full sleep window.
-while : ; do
-  sleep 0.05 &
-  wait "$!"
-done
-"""
-
-
-def _install_fake_tcpdump(tmp: Path) -> Path:
-    script = tmp / "fake_tcpdump.sh"
-    script.write_text(_FAKE_TCPDUMP_SCRIPT)
-    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return script
-
-
-# Bash stub used in place of trace-cmd. Honors the four subcommands the
-# supervisor invokes:
-#   reset                -> exit 0
-#   start <user_args>    -> exit 0 (no long-running process)
-#   stop                 -> exit 0
-#   extract -o <path>    -> write a non-empty file at <path>, exit 0
-# Anything else exits 0 so unrelated invocations don't fail the test.
-_FAKE_TRACECMD_SCRIPT = """\
-#!/usr/bin/env bash
-sub="$1"; shift || true
-case "$sub" in
-  extract)
-    out=""
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        -o) out="$2"; shift 2 ;;
-        *)  shift ;;
-      esac
-    done
-    if [ -n "$out" ]; then
-      mkdir -p "$(dirname "$out")"
-      printf 'fake-tracecmd pid=%d\\n' "$$" > "$out"
-    fi
-    ;;
-esac
-exit 0
-"""
-
-
-def _install_fake_tracecmd(tmp: Path) -> Path:
-    script = tmp / "fake_tracecmd.sh"
-    script.write_text(_FAKE_TRACECMD_SCRIPT)
-    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return script
+        raise AssertionError(f"LogCollector thread did not exit within {timeout}s")
 
 
 # --- tests -----------------------------------------------------------------
@@ -507,9 +434,7 @@ class TestE2eSnapshotFansOut(unittest.TestCase):
         # filename appears at most once (i.e. handler dedup worked). The
         # check uses the raw entry list so a duplicate write to the same
         # filename is detectable (a dict would silently collapse it).
-        self.assertEqual(
-            len(names), len(set(names)), f"duplicate members: {names}"
-        )
+        self.assertEqual(len(names), len(set(names)), f"duplicate members: {names}")
         members = dict(entries)
         self.assertIn("mounts.log", members)
         self.assertGreater(members["mounts.log"], 0)
@@ -525,7 +450,7 @@ class TestE2eSharedCaptureProcess(unittest.TestCase):
         self._td = tempfile.TemporaryDirectory(prefix="aodv2_lc_cap_")
         self.tmp = Path(self._td.name)
         self.batches = self.tmp / "batches"
-        self.fake_tcpdump = _install_fake_tcpdump(self.tmp)
+        self.fake_tcpdump = install_fake_tcpdump(self.tmp)
         self._prev_env = os.environ.get("AOD_TCPDUMP_BIN")
         os.environ["AOD_TCPDUMP_BIN"] = str(self.fake_tcpdump)
 
@@ -586,9 +511,7 @@ class TestE2eSharedCaptureProcess(unittest.TestCase):
 
         live_cap = self.tmp / "captures" / "smb" / "cap.pcap"
         latency_bundle = self.batches / "aod_capture_1000_smb_latency.tar.zst"
-        sockconn_bundle = (
-            self.batches / "aod_capture_2000_smb_sockconn.tar.zst"
-        )
+        sockconn_bundle = self.batches / "aod_capture_2000_smb_sockconn.tar.zst"
 
         # Serialise the snapshot requests so each one is fully bundled
         # before the next is enqueued. This isolates the invariant under
@@ -611,6 +534,15 @@ class TestE2eSharedCaptureProcess(unittest.TestCase):
             _wait_for(live_cap.exists, timeout=15),
             "stub recorder never re-wrote cap.pcap after first snapshot",
         )
+        # Coalesce-and-cooldown contract: the supervisor refuses new
+        # snapshot requests for restart_delay_sec after bundling so the
+        # fresh recorder has time to accumulate data. Wait for that
+        # window to clear before enqueuing the next event, otherwise the
+        # second snapshot lands in cooldown and is dropped.
+        self.assertTrue(
+            _wait_for(lambda: not cap_inst._is_cooldown, timeout=15),
+            "supervisor never cleared post-snapshot cooldown",
+        )
         self.controller.anomalyActionQueue.put(
             _make_event(Protocol.SMB, AnomalyType.SOCKCONN, ts=2_000)
         )
@@ -628,9 +560,7 @@ class TestE2eSharedCaptureProcess(unittest.TestCase):
         for b in (latency_bundle, sockconn_bundle):
             members = _bundle_members(b)
             self.assertIn("cap.pcap", members, f"{b.name} members={members}")
-            self.assertGreater(
-                members["cap.pcap"], 0, f"{b.name} cap.pcap empty"
-            )
+            self.assertGreater(members["cap.pcap"], 0, f"{b.name} cap.pcap empty")
 
         # Both anomalies declared the `mounts` quick action, so each event
         # must also have produced its sibling aod_quick_*.tar.zst alongside
@@ -660,7 +590,7 @@ class TestLongCaptureStopEvent(unittest.TestCase):
     def setUp(self):
         self._td = tempfile.TemporaryDirectory(prefix="aodv2_lc_stop_")
         self.tmp = Path(self._td.name)
-        self.fake_tcpdump = _install_fake_tcpdump(self.tmp)
+        self.fake_tcpdump = install_fake_tcpdump(self.tmp)
         self._prev_env = os.environ.get("AOD_TCPDUMP_BIN")
         os.environ["AOD_TCPDUMP_BIN"] = str(self.fake_tcpdump)
 
@@ -690,9 +620,7 @@ class TestLongCaptureStopEvent(unittest.TestCase):
                     break
             else:
                 task.cancel()
-                raise AssertionError(
-                    "capture process never reached running state"
-                )
+                raise AssertionError("capture process never reached running state")
 
             child_pid = cap._proc.pid
             stop_event.set()
@@ -726,7 +654,7 @@ class TestE2eSharedTraceCmdCapture(unittest.TestCase):
         self._td = tempfile.TemporaryDirectory(prefix="aodv2_lc_trace_")
         self.tmp = Path(self._td.name)
         self.batches = self.tmp / "batches"
-        self.fake_tracecmd = _install_fake_tracecmd(self.tmp)
+        self.fake_tracecmd = install_fake_tracecmd(self.tmp)
         self._prev_env = os.environ.get("AOD_TRACECMD_BIN")
         os.environ["AOD_TRACECMD_BIN"] = str(self.fake_tracecmd)
 
@@ -803,6 +731,13 @@ class TestE2eSharedTraceCmdCapture(unittest.TestCase):
             f"{sorted(p.name for p in self.batches.iterdir())}",
         )
 
+        # Coalesce-and-cooldown contract: wait for the supervisor to
+        # clear its post-bundle cooldown before enqueuing the next
+        # event, otherwise the request is dropped as redundant
+        self.assertTrue(
+            _wait_for(lambda: not cap_inst._is_cooldown, timeout=15),
+            "supervisor never cleared post-snapshot cooldown",
+        )
         self.controller.anomalyActionQueue.put(
             _make_event(Protocol.NFS, AnomalyType.ERROR, ts=2_000)
         )
@@ -818,9 +753,7 @@ class TestE2eSharedTraceCmdCapture(unittest.TestCase):
         for b in (latency_bundle, error_bundle):
             members = _bundle_members(b)
             self.assertIn("cap.dat", members, f"{b.name} members={members}")
-            self.assertGreater(
-                members["cap.dat"], 0, f"{b.name} cap.dat empty"
-            )
+            self.assertGreater(members["cap.dat"], 0, f"{b.name} cap.dat empty")
 
         # The shared capture object survived the whole run.
         self.assertIs(self.collector.captures[Protocol.NFS], cap_inst)
@@ -934,11 +867,13 @@ class TestLongCaptureSpawnDisable(unittest.TestCase):
                     os.environ["AOD_TRACECMD_BIN"] = prev
 
 
-class TestLongCaptureShutdownDropsQueuedSnapshots(unittest.TestCase):
-    """Snapshots that are still queued when the supervisor finishes its
-    main loop must be reported as dropped (the finally-block warning path
-    in LongCapture.run). The data is lost; the warning is the only signal
-    the operator has.
+class TestLongCaptureShutdownCoalescesQueuedSnapshots(unittest.TestCase):
+    """Snapshots that are still queued when the supervisor's main loop
+    observes stop_event must be coalesced into the shutdown bundle
+    rather than silently lost. The bundle log line must enumerate every
+    coalesced batch_id so the operator can correlate each request's
+    quick-action tarball with the single capture bundle that holds its
+    context.
 
     Exercised once per backend (tcpdump+SMB and trace-cmd+NFS) since the
     two have different supervisor lifecycles:
@@ -946,9 +881,9 @@ class TestLongCaptureShutdownDropsQueuedSnapshots(unittest.TestCase):
         sits on via proc.wait().
       * TraceCmdCapture has no recorder; _spawn assigns a _NoProc sentinel
         whose wait() blocks forever.
-    Both must drain-and-warn pending snap_q entries in the finally block."""
+    Both must drain-and-coalesce pending snap_q entries before exiting."""
 
-    def _run_drop_assertions(self, cap) -> None:
+    def _run_coalesce_assertions(self, cap) -> None:
         stop_event = threading.Event()
 
         async def driver():
@@ -965,38 +900,58 @@ class TestLongCaptureShutdownDropsQueuedSnapshots(unittest.TestCase):
                 raise AssertionError("supervisor never reached running state")
 
             # Enqueue several snapshots back-to-back, then immediately
-            # request shutdown. At most one snapshot can be processed
-            # between the put and the stop_event firing; the rest stay in
-            # the queue and must be drained-and-warned by the finally block.
-            cap.snapshot("drop_a")
-            cap.snapshot("drop_b")
-            cap.snapshot("drop_c")
+            # request shutdown. The supervisor must coalesce them all
+            # into a single shutdown bundle and log every batch_id.
+            cap.snapshot("coalesce_a")
+            cap.snapshot("coalesce_b")
+            cap.snapshot("coalesce_c")
             stop_event.set()
             await asyncio.wait_for(task, timeout=cap.stop_grace_sec + 10)
 
-        with self.assertLogs("base.LongCapture", level="WARNING") as cm:
+        with self.assertLogs("base.LongCapture", level="INFO") as cm:
             asyncio.run(driver())
 
-        dropped_logs = [m for m in cm.output if "DROPPED" in m]
+        # Accept either log wording: the supervisor may bundle via the
+        # regular snap branch ("snapshot bundled:") if snap_wait fires
+        # first, or via the shutdown branch ("snapshot bundled at
+        # shutdown:") if stop_wait wins the race. Both paths must
+        # coalesce all three queued requests into a single bundle.
+        coalesce_logs = [
+            m
+            for m in cm.output
+            if "snapshot bundled" in m and "coalesced 3 request(s)" in m
+        ]
         self.assertTrue(
-            dropped_logs,
-            f"expected at least one DROPPED warning; got {cm.output}",
+            coalesce_logs,
+            f"expected a coalesce log naming all 3 queued requests; "
+            f"got {cm.output}",
         )
-        # At least one of the queued ids must appear in the warning. We
-        # don't pin which ones because the supervisor may legitimately
-        # bundle one before observing stop_event.
+        # At least one of the queued ids must appear in the coalesce log.
+        # We don't pin which one is named first because the supervisor
+        # may legitimately bundle one before observing stop_event; what
+        # matters is that none of the three were silently lost.
+        all_ids_logged = " ".join(coalesce_logs)
         self.assertTrue(
             any(
-                any(tag in m for tag in ("drop_a", "drop_b", "drop_c"))
-                for m in dropped_logs
+                tag in all_ids_logged
+                for tag in ("coalesce_a", "coalesce_b", "coalesce_c")
             ),
-            f"DROPPED warning did not name any queued batch_id: {dropped_logs}",
+            f"shutdown-coalesce log did not name any queued batch_id: "
+            f"{coalesce_logs}",
+        )
+        # The supervisor must have left its snap_q drained. Anything
+        # leftover would mean a request was lost without being bundled
+        # or warned about.
+        self.assertEqual(
+            cap._snap_q.qsize(),
+            0,
+            "supervisor exited with snap_q still holding requests",
         )
 
-    def test_tcpdump_queued_snapshots_at_shutdown_emit_dropped_warning(self):
-        with tempfile.TemporaryDirectory(prefix="aodv2_lc_dropq_td_") as td:
+    def test_tcpdump_queued_snapshots_at_shutdown_coalesce_into_bundle(self):
+        with tempfile.TemporaryDirectory(prefix="aodv2_lc_coalq_td_") as td:
             tmp = Path(td)
-            fake = _install_fake_tcpdump(tmp)
+            fake = install_fake_tcpdump(tmp)
             prev = os.environ.get("AOD_TCPDUMP_BIN")
             os.environ["AOD_TCPDUMP_BIN"] = str(fake)
             try:
@@ -1007,17 +962,17 @@ class TestLongCaptureShutdownDropsQueuedSnapshots(unittest.TestCase):
                     bundle_dir=str(tmp / "batches"),
                     restart_delay_sec=0.05,
                 )
-                self._run_drop_assertions(cap)
+                self._run_coalesce_assertions(cap)
             finally:
                 if prev is None:
                     os.environ.pop("AOD_TCPDUMP_BIN", None)
                 else:
                     os.environ["AOD_TCPDUMP_BIN"] = prev
 
-    def test_tracecmd_queued_snapshots_at_shutdown_emit_dropped_warning(self):
-        with tempfile.TemporaryDirectory(prefix="aodv2_lc_dropq_tc_") as td:
+    def test_tracecmd_queued_snapshots_at_shutdown_coalesce_into_bundle(self):
+        with tempfile.TemporaryDirectory(prefix="aodv2_lc_coalq_tc_") as td:
             tmp = Path(td)
-            fake = _install_fake_tracecmd(tmp)
+            fake = install_fake_tracecmd(tmp)
             prev = os.environ.get("AOD_TRACECMD_BIN")
             os.environ["AOD_TRACECMD_BIN"] = str(fake)
             try:
@@ -1028,7 +983,7 @@ class TestLongCaptureShutdownDropsQueuedSnapshots(unittest.TestCase):
                     bundle_dir=str(tmp / "batches"),
                     restart_delay_sec=0.05,
                 )
-                self._run_drop_assertions(cap)
+                self._run_coalesce_assertions(cap)
             finally:
                 if prev is None:
                     os.environ.pop("AOD_TRACECMD_BIN", None)

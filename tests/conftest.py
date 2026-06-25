@@ -8,11 +8,17 @@ Also exposes a couple of plain helpers used by multiple test files:
     component that reads .config.<section> and .stop_event.
   * make_batch -- create a sparse aod_*.tar.zst file with optional
     mtime backdating, used by both unit and soak tests.
+  * install_fake_tcpdump / install_fake_tracecmd -- drop bash stubs
+    into a tmp dir for use as drop-in replacements for the long-capture
+    binaries (via AOD_TCPDUMP_BIN / AOD_TRACECMD_BIN). Shared between
+    LogCollector unit tests and the end-to-end Controller integration
+    suite so the stub contracts stay in one place.
 """
 
 from __future__ import annotations
 
 import os
+import stat
 import threading
 import time
 from pathlib import Path
@@ -76,6 +82,81 @@ def make_batch(
         mt = time.time() - age_seconds
         os.utime(path, (mt, mt))
     return path
+
+
+# --- Fake long-capture binaries ---------------------------------------------
+
+# Bash stub used in place of tcpdump. Writes a non-empty `cap.pcap` to the
+# path passed via `-w`, then idles until LongCapture._stop sends SIGINT to
+# the process group.
+FAKE_TCPDUMP_SCRIPT = """\
+#!/usr/bin/env bash
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -w) out="$2"; shift 2 ;;
+    *)  shift ;;
+  esac
+done
+if [ -n "$out" ]; then
+  mkdir -p "$(dirname "$out")"
+  printf 'fake-pcap pid=%d\\n' "$$" > "$out"
+fi
+trap 'exit 0' INT TERM
+# Background `sleep` so `wait` is interruptible and the SIGINT trap fires
+# without waiting out the full sleep window.
+while : ; do
+  sleep 0.05 &
+  wait "$!"
+done
+"""
+
+
+def install_fake_tcpdump(tmp: Path) -> Path:
+    """Write FAKE_TCPDUMP_SCRIPT into `tmp/fake_tcpdump.sh` (chmod +x) and
+    return its path. Caller is responsible for setting AOD_TCPDUMP_BIN."""
+    script = tmp / "fake_tcpdump.sh"
+    script.write_text(FAKE_TCPDUMP_SCRIPT)
+    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return script
+
+
+# Bash stub used in place of trace-cmd. Honors the four subcommands the
+# supervisor invokes:
+#   reset                -> exit 0
+#   start <user_args>    -> exit 0 (no long-running process)
+#   stop                 -> exit 0
+#   extract -o <path>    -> write a non-empty file at <path>, exit 0
+# Anything else exits 0 so unrelated invocations don't fail the test.
+FAKE_TRACECMD_SCRIPT = """\
+#!/usr/bin/env bash
+sub="$1"; shift || true
+case "$sub" in
+  extract)
+    out=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -o) out="$2"; shift 2 ;;
+        *)  shift ;;
+      esac
+    done
+    if [ -n "$out" ]; then
+      mkdir -p "$(dirname "$out")"
+      printf 'fake-tracecmd pid=%d\\n' "$$" > "$out"
+    fi
+    ;;
+esac
+exit 0
+"""
+
+
+def install_fake_tracecmd(tmp: Path) -> Path:
+    """Write FAKE_TRACECMD_SCRIPT into `tmp/fake_tracecmd.sh` (chmod +x) and
+    return its path. Caller is responsible for setting AOD_TRACECMD_BIN."""
+    script = tmp / "fake_tracecmd.sh"
+    script.write_text(FAKE_TRACECMD_SCRIPT)
+    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return script
 
 
 # --- Output directory fixtures -----------------------------------------------
