@@ -1,0 +1,40 @@
+name: Keepalive
+
+on:
+  schedule:
+    - cron: '0 0 1 * *'
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Re-enable CodeQL workflow if disabled
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const workflowName = 'CodeQL Advanced';
+            const workflows = await github.rest.actions.listRepoWorkflows({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+
+            const wf = workflows.data.workflows.find((w) => w.name === workflowName);
+            if (!wf) {
+              core.setFailed(`Workflow not found by name: ${workflowName}`);
+              return;
+            }
+
+            if (wf.state.startsWith('disabled')) {
+              console.log(`Re-enabling: ${wf.name} (${wf.path})`);
+              await github.rest.actions.enableWorkflow({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: wf.id,
+              });
+              console.log('Done.');
+            } else {
+              console.log(`No action needed. ${wf.name} is ${wf.state}.`);
+            }
