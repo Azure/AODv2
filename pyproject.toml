@@ -1,12 +1,20 @@
 [project]
 name = "aodv2"
 version = "0.1.0"
-description = "Always-on diagnostic daemon for Linux"
+description = "Always-on diagnostic daemon for Linux SMB and NFS"
 requires-python = ">=3.11"
 dependencies = [
   "numpy>=1.21.0",
   "zstandard>=0.19.0",
   "PyYAML>=6.0",
+]
+authors = [
+  {name = "Meetakshi Setiya", email = "msetiya@microsoft.com"},
+  {name = "Sreyas Lakkimsetti", email = "slakkimsetti@microsoft.com"}
+]
+maintainers = [
+  {name = "Meetakshi Setiya", email = "msetiya@microsoft.com"},
+  {name = "Shyam Prasad", email = "sprasad@microsoft.com"}
 ]
 
 [project.optional-dependencies]

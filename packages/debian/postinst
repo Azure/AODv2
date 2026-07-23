@@ -1,19 +1,6 @@
 #!/bin/sh
 set -e
 
-case "$1" in
-    configure)
-        # Build/refresh the venv from the in-tree pyproject.toml.
-        rm -rf /opt/aodv2/venv
-        /usr/bin/python3 -m venv /opt/aodv2/venv
-        /opt/aodv2/venv/bin/pip install --upgrade pip
-        /opt/aodv2/venv/bin/pip install /opt/aodv2 || {
-            echo "venv build failed" >&2
-            exit 1
-        }
-        ;;
-esac
-
 #DEBHELPER#
 
 exit 0

@@ -11,15 +11,6 @@ override_dh_auto_build:
 
 override_dh_auto_test:
 
+# systemd unit is picked up automatically from debian/aodv2.service by dh_installsystemd.
 override_dh_auto_install:
-	# Application tree under /opt/aodv2
-	install -d -m 0755 debian/aodv2/opt/aodv2
-	cp -a src debian/aodv2/opt/aodv2/src
-	install -m 0644 pyproject.toml debian/aodv2/opt/aodv2/pyproject.toml
 
-	# Configuration (auto-detected as conffile because it lives under /etc)
-	install -D -m 0644 config/config.yaml debian/aodv2/etc/aodv2/config.yaml
-
-	# systemd unit (dh_installsystemd picks it up under lib/systemd/system)
-	install -D -m 0644 aodv2.service \
-	    debian/aodv2/lib/systemd/system/aodv2.service

@@ -14,13 +14,17 @@ Package: aodv2
 Architecture: amd64
 Depends: ${misc:Depends},
          python3 (>= 3.11),
-         python3-venv (>= 3.11),
+         python3-numpy,
+         python3-yaml,
+         python3-zstandard,
          systemd
+Recommends: trace-cmd, tcpdump
 Description: Always-on diagnostics daemon for Linux NFS and SMB filesystems
- Always-on Diagnostics daemon for monitoring Linux NFS and SMB anomalies and
- automatic log-collection.
+ Always-on Diagnostics daemon for monitoring Linux NFS and SMB anomalies
+ with automatic log collection.
  .
- The daemon is installed under /opt/aodv2 and runs from a self-contained
- Python virtual environment built at install time. Configuration lives in
+ The daemon is installed under /opt/aodv2 and runs from the system Python
+ interpreter by default. Set AOD_PYTHON in /etc/aodv2/aodv2.env to point
+ it at a user-managed virtual environment instead. Configuration lives in
  /etc/aodv2/config.yaml; the output directory is user-tunable via the
  aod_output_dir key in that file and is created by the daemon on first use.

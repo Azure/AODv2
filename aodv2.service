@@ -10,7 +10,14 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-ExecStart=/opt/aodv2/venv/bin/python -O /opt/aodv2/src/Controller.py
+# AOD_PYTHON selects the interpreter. On any host where the
+# default python3 is too old, override this in /etc/aodv2/aodv2.env, e.g.
+#   AOD_PYTHON=/usr/bin/python3.11        (RHEL 9 with python3.11 rpm)
+#   AOD_PYTHON=/opt/aodv2-venv/bin/python (venv install)
+
+Environment=AOD_PYTHON=/usr/bin/python3
+EnvironmentFile=-/etc/aodv2/aodv2.env
+ExecStart=/bin/sh -c 'exec "$AOD_PYTHON" -O /opt/aodv2/src/aod_entry.py'
 Environment=PYTHONPATH=/opt/aodv2/src
 Environment=AOD_CONFIG=/etc/aodv2/config.yaml
 Restart=on-failure
