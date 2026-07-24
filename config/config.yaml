@@ -1,34 +1,9 @@
-watch_interval_sec: 1
+watch_interval_sec: 60
 aod_output_dir: /var/log/aod
 
-watcher:
-  actions:
-    - dmesg
-    - journalctl
-    - debugdata
-    - stats         # I'm assuming this refers to cifs stats
-
-guardian:
-  anomalies:
-    error:
-      type: "Error"
-      tool: "smbiosnoop"
-      mode: "trackonly"        # Options: all, trackonly, excludeonly
-      acceptable_count: 10  # % of error responses in X seconds
-      track_codes:              # Error codes to track
-        - EACCES
-        - EAGAIN
-        - EIO
-      # exclude_codes:          # Error codes to exclude, not to be used with trackonly
-      #   - ENOENT
-      actions:
-        - dmesg
-        - journalctl           # can add another eBPF tool to trigger here too
-
-
-    # Refer to the note below for more info
+anomalies:
+  smb:
     latency:
-      type: "Latency"
       tool: "smbslower"
       mode: "all"              # Options: all, trackonly, excludeonly
       acceptable_count: 10     # number of commands with latency above threshold in X seconds
@@ -37,21 +12,54 @@ guardian:
         - command: SMB2_WRITE
           threshold: 50
       actions:
-        - dmesg
-        - journalctl           
-        - debugdata
-        - stats
-        - mounts
-        - smbinfo
-        - syslogs
+        dmesg:
+        journalctl:
+        debugdata:
+        stats:
+        mounts:
+        smbinfo:
+        syslogs:
+        tcpdump: ["-s", "65536", "-B", "10240", "-C", "2", "-W", "100"]
+    sockconn:
+      tool: "ss"
+      actions:
+        dmesg:
+        journalctl:
+        stats:
+        tcpdump:  ["-s", "65536", "-B", "10240", "-C", "2", "-W", "100"]
+
+  nfs:
+    latency:
+      tool: "nfsslower"
+      mode: "all"              # Options: all, trackonly, excludeonly
+      acceptable_count: 10     # number of commands with latency above threshold in X seconds
+      default_threshold_ms: 50  # milliseconds, by default applies to all commands
+      actions:
+        dmesg:
+        journalctl:
+        syslogs:
+        trace-cmd: ["-e", "nfs", "-e", "nfs4", "-e", "sunrpc", "-b", "1024"]
+    sockconn:
+      tool: "ss"
+      actions:
+        dmesg:
+    error:
+      tool: "nfsiosnoop"
+      acceptable_count: 5     # number of matching error events in watch_interval_sec
+      track_commands:         # leave empty to let all NFS commands through
+      track_errors:           # at least one of track_commands/track_errors must be non-empty
+        - NFS4ERR_BAD_STATEID
+        - NFS4ERR_OLD_STATEID
+      actions:
+        dmesg:
+        journalctl:
+        syslogs:
+        trace-cmd: ["-e", "nfs", "-e", "nfs4", "-e", "sunrpc", "-b", "1024"]
 
 cleanup:
-  cleanup_interval_sec: 60     # Interval in seconds to run cleanup
-  max_log_age_days: 2          # Maximum age of logs in days
-  max_total_log_size_mb: 0.5   # Maximum total size of all logs in MB
-
-audit:
-  enabled: true
+  cleanup_interval_sec: 300     # Interval in seconds to run cleanup
+  max_log_age_days: 2           # Maximum age of logs in days
+  max_total_log_size_mb: 1024   # Maximum total size of all logs in MB
 
 # ** Use either track_commands (trackonly) or exclude_commands (excludeonly).
 # Mode type will determine which one is used.

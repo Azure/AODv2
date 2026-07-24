@@ -1,0 +1,3 @@
+src              opt/aodv2/
+config/config.yaml   etc/aodv2/
+aodv2.env        etc/aodv2/
