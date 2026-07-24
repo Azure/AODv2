@@ -1,10 +1,10 @@
 # AODv2 — Always-On Diagnostics for Linux SMB & NFS
 
-AODv2 is a background service that monitors Linux SMB (CIFS) and NFS traffic.
-On detecting an anomaly — a latency spike, a burst of protocol errors, or a
-socket-connection fault — it automatically collects the corresponding
-diagnostic data. It runs continuously at low overhead using eBPF probes and
-writes its findings as compressed bundles suitable for offline analysis.
+AODv2 is a background service that monitors Linux SMB (CIFS) and NFS traffic. On
+detecting an anomaly — a latency spike, a burst of protocol errors, or a
+socket-connection fault — it automatically collects the corresponding diagnostic
+data. It runs continuously at low overhead using eBPF probes and writes its
+findings as compressed bundles suitable for offline analysis.
 
 ---
 
@@ -20,14 +20,14 @@ writes its findings as compressed bundles suitable for offline analysis.
 
 ## Requirements
 
-| Requirement | Details |
-| --- | --- |
+| Requirement      | Details                                                                    |
+| ---------------- | -------------------------------------------------------------------------- |
 | Operating system | Linux kernel with eBPF and BTF support (5.15+; select probes require 6.8+) |
-| Python | 3.11 or newer |
-| Privileges | root (required for eBPF loading and privileged log sources) |
-| Runtime packages | `numpy`, `zstandard`, `PyYAML` |
-| External tools | `tcpdump` and `trace-cmd`, if packet or trace captures are enabled |
-| Kernel modules | `cifs` and `nfs` must be loaded for SMB and NFS monitoring respectively |
+| Python           | 3.11 or newer                                                              |
+| Privileges       | root (required for eBPF loading and privileged log sources)                |
+| Runtime packages | `numpy`, `zstandard`, `PyYAML`                                             |
+| External tools   | `tcpdump` and `trace-cmd`, if packet or trace captures are enabled         |
+| Kernel modules   | `cifs` and `nfs` must be loaded for SMB and NFS monitoring respectively    |
 
 ### Verify prerequisites
 
@@ -52,16 +52,17 @@ lsmod | grep -q '^nfs' && echo "nfs loaded" || sudo modprobe nfs
 
 ## Obtaining AODv2
 
-We recommend installing AODv2 from the prebuilt `.deb` or `.rpm` package
-hosted on `packages.microsoft.com`. These packages bundle the compiled eBPF
-probes, so no build toolchain is required.
+We recommend installing AODv2 from the prebuilt `.deb` or `.rpm` package hosted
+on `packages.microsoft.com`. These packages bundle the compiled eBPF probes, so
+no build toolchain is required.
 
 ```bash
 # Download from packages.microsoft.com
 # (steps to be added)
 ```
 
-If you want to build AODv2 from source, refer to [Building from Source](#building-from-source).
+If you want to build AODv2 from source, refer to
+[Building from Source](#building-from-source).
 
 ---
 
@@ -95,11 +96,11 @@ The daemon runs under the interpreter named by `AOD_PYTHON`, configured in
 - **System interpreter (default).** Leave `AOD_PYTHON` unset. The unit falls
   back to `/usr/bin/python3`, which should be ensured to be 3.11+ on the host
   system. Runtime dependencies are satisfied by the `python3-numpy`,
-  `python3-yaml` (`python3-pyyaml` on Fedora), and `python3-zstandard`
-  packages pulled in automatically.
+  `python3-yaml` (`python3-pyyaml` on Fedora), and `python3-zstandard` packages
+  pulled in automatically.
 
-- **Alternate system interpreter.** If the default `python3` is older than
-  3.11, install a newer one and point `AOD_PYTHON` at it:
+- **Alternate system interpreter.** If the default `python3` is older than 3.11,
+  install a newer one and point `AOD_PYTHON` at it:
 
   ```bash
   # /etc/aodv2/aodv2.env
@@ -140,8 +141,8 @@ sudo systemctl kill --kill-whom=main -s SIGUSR1 aodv2
 ls -1 /var/log/aod/batches/
 ```
 
-A healthy install shows `active (running)`, logs no tracebacks, and writes a
-new `aod_quick_*.tar.zst` bundle after the snapshot signal.
+A healthy install shows `active (running)`, logs no tracebacks, and writes a new
+`aod_quick_*.tar.zst` bundle after the snapshot signal.
 
 ---
 
@@ -173,16 +174,16 @@ pip install .
 make build install-bins
 ```
 
-> `pip install .` installs the Python package and its runtime dependencies
-> only; it does not compile or stage the eBPF probes. Step 4 is what builds
-> them into `src/bin/`, from where a from-source run loads them directly.
+> `pip install .` installs the Python package and its runtime dependencies only;
+> it does not compile or stage the eBPF probes. Step 4 is what builds them into
+> `src/bin/`, from where a from-source run loads them directly.
 
 > The service must run as root, whereas the virtual environment resides in a
 > user account. When launching from a virtual environment as root, invoke its
 > interpreter explicitly: `sudo .venv/bin/python src/aod_entry.py`.
 
-You can run AODv2 now as a Python program, or build your own RPM/DEB package
-to install and run it as a `systemd` service.
+You can run AODv2 now as a Python program, or build your own RPM/DEB package to
+install and run it as a `systemd` service.
 
 Building packages requires the eBPF build tools listed above plus the relevant
 packaging toolchain:
@@ -195,7 +196,8 @@ make rpm   # output: rpms/aodv2-<version>.rpm
 make deb   # output: debs/aodv2_<version>_amd64.deb
 ```
 
-For installing the DEB/RPM packages and post-install config, refer to [Installation](#installation).
+For installing the DEB/RPM packages and post-install config, refer to
+[Installation](#installation).
 
 ---
 
@@ -210,7 +212,7 @@ AODv2 reads a single YAML file defining what to monitor and what to collect.
 The primary setting is the output directory for diagnostic bundles:
 
 ```yaml
-aod_output_dir: /var/log/aod   # default bundle output location
+aod_output_dir: /var/log/aod # default bundle output location
 ```
 
 Anomaly thresholds, diagnostic selection, and cleanup policy are documented in
@@ -241,8 +243,8 @@ sudo AOD_CONFIG=./config/config.yaml \
      python3 src/aod_entry.py
 ```
 
-Terminate with Ctrl+C. AODv2 shuts down gracefully and writes a final
-diagnostic bundle before exiting.
+Terminate with Ctrl+C. AODv2 shuts down gracefully and writes a final diagnostic
+bundle before exiting.
 
 ---
 
@@ -288,7 +290,10 @@ sudo rpm -e aodv2         # RHEL / Fedora / SLES
 
 For comprehensive documentation, refer to the below:
 
-- **[Architecture Guide](docs/ARCHITECTURE.md)** - System architecture and design
-- **[Configuration Guide](docs/CONFIGURATION.md)** - Configuration options and examples
-- **[API Reference](docs/API_REFERENCE.md)** - Complete API documentation for all classes and functions
+- **[Architecture Guide](docs/ARCHITECTURE.md)** - System architecture and
+  design
+- **[Configuration Guide](docs/CONFIGURATION.md)** - Configuration options and
+  examples
+- **[API Reference](docs/API_REFERENCE.md)** - Complete API documentation for
+  all classes and functions
 - **[Usage Guide](USAGE.md)** - Advanced usage and monitoring tools
