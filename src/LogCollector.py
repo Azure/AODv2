@@ -29,15 +29,15 @@ LONG_CAPTURE_RESTART_DELAY_SEC = (
     1  # Time to wait after stopping a capture before restarting it.
 )
 
+# Fixed lookback window (seconds) for journalctl/dmesg quick actions.
+LOG_LOOKBACK_SEC = 300
+
 
 class LogCollector:
 
     def __init__(self, controller):
         self.max_concurrent_tasks = 4
         self.controller = controller
-        self.anomaly_interval = getattr(
-            self.controller.config, "watch_interval_sec", 60
-        )  # 60 second default
         root_output_dir = getattr(
             self.controller.config, "aod_output_dir", "/var/log/aod"
         )
@@ -52,12 +52,12 @@ class LogCollector:
             )
         self.action_factory = {
             "journalctl": lambda: JournalctlQuickAction(
-                self.aod_output_dir, self.anomaly_interval
+                self.aod_output_dir, LOG_LOOKBACK_SEC
             ),
             "stats": lambda: CifsstatsQuickAction(self.aod_output_dir),
             "debugdata": lambda: DebugDataQuickAction(self.aod_output_dir),
             "dmesg": lambda: DmesgQuickAction(
-                self.aod_output_dir, self.anomaly_interval
+                self.aod_output_dir, LOG_LOOKBACK_SEC
             ),
             "mounts": lambda: MountsQuickAction(self.aod_output_dir),
             "smbinfo": lambda: SmbinfoQuickAction(self.aod_output_dir),
