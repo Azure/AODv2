@@ -57,7 +57,6 @@ class ConfigManager:
             aod_output_dir=config_data["aod_output_dir"],
             anomalies=anomalies,
             cleanup=config_data["cleanup"],
-            audit=config_data["audit"],
         )
 
     def _parse_actions(

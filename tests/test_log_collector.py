@@ -166,9 +166,6 @@ class TestOneLongCapturePerProtocol(unittest.TestCase):
               cleanup_interval_sec: 60
               max_log_age_days: 2
               max_total_log_size_mb: 50
-
-            audit:
-              enabled: true
             """,
         )
         config = ConfigManager(str(cfg)).data
@@ -229,9 +226,6 @@ class TestAllHandlersDedup(unittest.TestCase):
               cleanup_interval_sec: 60
               max_log_age_days: 2
               max_total_log_size_mb: 50
-
-            audit:
-              enabled: true
             """,
         )
         config = ConfigManager(str(cfg)).data
@@ -281,9 +275,6 @@ class TestE2eMultipleEvents(unittest.TestCase):
               cleanup_interval_sec: 60
               max_log_age_days: 2
               max_total_log_size_mb: 50
-
-            audit:
-              enabled: true
             """,
         )
         self.config = ConfigManager(str(cfg)).data
@@ -393,9 +384,6 @@ class TestE2eSnapshotFansOut(unittest.TestCase):
               cleanup_interval_sec: 60
               max_log_age_days: 2
               max_total_log_size_mb: 50
-
-            audit:
-              enabled: true
             """,
         )
         self.config = ConfigManager(str(cfg)).data
@@ -481,9 +469,6 @@ class TestE2eSharedCaptureProcess(unittest.TestCase):
               cleanup_interval_sec: 60
               max_log_age_days: 2
               max_total_log_size_mb: 50
-
-            audit:
-              enabled: true
             """,
         )
         self.config = ConfigManager(str(cfg)).data
@@ -690,9 +675,6 @@ class TestE2eSharedTraceCmdCapture(unittest.TestCase):
               cleanup_interval_sec: 60
               max_log_age_days: 2
               max_total_log_size_mb: 50
-
-            audit:
-              enabled: true
             """,
         )
         self.config = ConfigManager(str(cfg)).data

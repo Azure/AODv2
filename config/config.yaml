@@ -61,9 +61,6 @@ cleanup:
   max_log_age_days: 2           # Maximum age of logs in days
   max_total_log_size_mb: 1024   # Maximum total size of all logs in MB
 
-audit:
-  enabled: true
-
 # ** Use either track_commands (trackonly) or exclude_commands (excludeonly).
 # Mode type will determine which one is used.
 # With Mode type all, track commands with the given thresholds,

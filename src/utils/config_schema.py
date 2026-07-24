@@ -40,4 +40,3 @@ class Config:
     aod_output_dir: str
     anomalies: dict[AnomalyKey, AnomalyConfig]
     cleanup: dict
-    audit: dict

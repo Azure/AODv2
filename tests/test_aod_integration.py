@@ -139,9 +139,6 @@ cleanup:
   cleanup_interval_sec: 60
   max_log_age_days: 2
   max_total_log_size_mb: 50
-
-audit:
-  enabled: true
 """
 
 # Bundle members produced by LogCollector for a full-system (AOD)
