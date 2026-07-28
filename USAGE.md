@@ -1,817 +1,278 @@
-# Advanced Usage and Developer Guide
+# AODv2 Usage Guide
 
-This document provides advanced guidance for developers and power users, including details on monitoring, testing, and extending the AOD system. For installation and basic configuration, please see the main [README.md](README.md).
+This guide covers day-to-day operation of AODv2: controlling the service,
+requesting diagnostics, locating and interpreting the output bundles, and
+configuring what the daemon monitors and collects.
 
-## 📋 Requirements and Prerequisites
+For installation, see [README.md](README.md). For architecture and extension,
+see [docs](docs/).
 
-### System Requirements
+---
 
-**Operating System:**
-- Linux kernel 5.15+ with eBPF support
-- Note: Future eBPF scripts will require kernel 6.8+
+## Controlling the service
 
-**Permissions:**
-- Root access required for eBPF program loading and system monitoring
-
-### Python Requirements
-
-**Python Version:**
-- Python 3.9+ (based on project configuration)
-
-### Python Dependencies
-
-The core AOD system requires specific Python packages listed in `requirements.txt`:
+When installed as a package, AODv2 runs under `systemd` as the `aodv2` unit.
 
 ```bash
-# Core monitoring dependencies
-pandas>=1.5.0      # Data analysis and manipulation
-matplotlib>=3.5.0  # Plotting and visualization  
-numpy>=1.21.0      # Numerical computing and array operations
-
-# Fast compression library
-zstandard>=0.19.0  # Log compression
-
-# Configuration parsing
-PyYAML>=6.0        # YAML configuration file parsing
+sudo systemctl enable --now aodv2   # start now and on boot
+sudo systemctl start aodv2          # start
+sudo systemctl stop aodv2           # stop (writes a final shutdown bundle)
+sudo systemctl restart aodv2        # restart (e.g. after a config change)
+systemctl status aodv2              # current state
+sudo journalctl -u aodv2 -f         # follow logs
 ```
 
-**Development Dependencies** (in `requirements-dev.txt`):
-```bash
-pytest>=7.0.0      # Unit testing framework
-black>=22.0.0      # Code formatting
-flake8>=4.0.0      # Code linting
-```
+A configuration change to `/etc/aodv2/config.yaml` requires a restart to take
+effect.
 
-## 📊 Monitoring & Analysis Tools
+### Observing anomaly detections
 
-The AODv2 system includes several standalone tools for performance monitoring and data analysis.
-
-### System Resource Monitoring (`monitor.py`)
-
-Monitor CPU and memory usage over time:
+Each detected anomaly is logged at `CRITICAL` to the system journal (syslog
+facility `daemon`, identifier `aodv2`), independent of the collected bundles.
+The record names the anomaly and the detection time, so anomalies remain visible
+even if their bundle is later rotated away:
 
 ```bash
-# Monitor for 5 minutes (default)
-python3 monitor.py
+# All AODv2 messages from the current boot
+sudo journalctl -u aodv2 -b
 
-# Monitor for 10 minutes with 2-second intervals
-python3 monitor.py 2 10
-
-# Monitor for 30 minutes with 5-second intervals  
-python3 monitor.py 5 30
+# Just the detection records
+sudo journalctl -t aodv2 -p crit
 ```
 
-**Output:** `system_usage_YYYYMMDD_HHMMSS.csv`
+---
 
-### Disk Usage Monitor (`disk_monitor.py`)
+## Requesting diagnostics on demand
 
-Monitor AOD log directory growth:
+AODv2 collects diagnostics automatically when it detects an anomaly. But, two
+user-triggered mechanisms produce a **full-system bundle** regardless of anomaly
+state:
+
+| Trigger         | How                                 | Bundle label   |
+| --------------- | ----------------------------------- | -------------- |
+| Manual snapshot | `SIGUSR1` to the controller         | `aod_snapshot` |
+| Shutdown dump   | service stop (`SIGTERM` / `SIGINT`) | `aod_shutdown` |
+
+### Sending a manual snapshot
+
+Use `--kill-whom=main` so `systemd` signals only the controller, not the whole
+control group:
 
 ```bash
-# Monitor every 5 seconds indefinitely
-python3 disk_monitor.py
-
-# Monitor every 10 seconds for 30 minutes
-python3 disk_monitor.py 10 30
-
-# Quick 5-minute test
-python3 disk_monitor.py 2 5
+sudo systemctl kill --kill-whom=main -s SIGUSR1 aodv2
 ```
 
-**Output:** `disk_usage_YYYYMMDD_HHMMSS.csv`
-
-### Performance Comparison (`compare.py` and `csv_range_compare.py`)
-
-**`compare.py` (Basic):**
-Generate side-by-side performance comparisons:
-```bash
-# Compare two system monitoring runs
-python3 compare.py system_usage_baseline.csv system_usage_with_aod.csv
-```
-**Output:** `comparison_graph.png` with statistics
-
-**`csv_range_compare.py` (Advanced):**
-Compare two CSV files with range-based analysis (0-200s, 200-500s, 500-800s).
-Note that these ranges can be configurable, for now its hardcoded. 
-The ranges you want to use will depend on the workload you are running and what kind of time ranges you want to analyze.
-```bash
-# Analyze both CPU and Memory
-python3 csv_range_compare.py baseline.csv test.csv
-# Analyze specific column
-python3 csv_range_compare.py without_aod.csv with_aod.csv CPU_Percent
-```
-Features:
-- **Automatic column detection**: Finds CPU and Memory columns automatically
-- **Range-based analysis**: Separate statistics for different time periods
-- **Visual comparisons**: Generates detailed plots for each range
-- **Comprehensive metrics**: Average, max, min, standard deviation, and percentage changes
-- **Flexible input**: Supports various timestamp formats and column naming
-
-### Disk Usage Visualization (`disk_plot.py`)
-
-Visualize disk usage growth over time:
+For a foreground (from-source) run, signal the process directly:
 
 ```bash
-# Plot single monitoring session
-python3 disk_plot.py disk_usage_20241224_120000.csv
-
-# Compare disk usage between two sessions
-python3 disk_plot.py disk_baseline.csv disk_with_aod.csv
+sudo kill -USR1 "$(pgrep -f aod_entry.py)"
 ```
 
-**Output:** `disk_usage_plot.png` or `disk_usage_comparison.png`
+---
 
-## 📊 Performance Testing Workflow: AOD Impact Analysis
+## Where diagnostics are written
 
-This workflow details how to accurately measure the performance impact of AODv2 on your system while it's under a specific workload. The key is to compare system behavior with and without AOD running.
+All output is written beneath `aod_output_dir` (default `/var/log/aod`)
+specified in `config.yaml`:
 
-**Step 1: Establish a Baseline (Without AOD)**
+```
+<aod_output_dir>/
+├── batches/     # finished, compressed diagnostic bundles (*.tar.zst)
+└── captures/    # scratch space for the running capture processes
+    ├── smb/
+    └── nfs/
+```
 
-First, measure your system's performance under your chosen workload *without* AOD running. This gives you a baseline to compare against.
+Completed bundles are the `*.tar.zst` files in `batches/`. The `captures/`
+subtree holds live capture files and is managed by the daemon; do not rely on
+its contents directly.
 
-*   **Action**: In separate terminals, start your workload and the monitoring scripts.
-*   **Example**:
-    ```bash
-    # Terminal 1: Start your workload (e.g., a file transfer script, database query, etc.)
-    ./run_my_workload.sh
+### Bundle types and naming
 
-    # Terminal 2: Monitor system CPU and Memory
-    python3 tests/monitor.py 10 10
-    # --> Let's rename the output CSV to baseline_system_usage.csv
+Each collection event produces up to two bundles per protocol:
 
-    # Terminal 3: Monitor disk usage (optional for baseline, but good practice)
-    python3 tests/disk_monitor.py 10 10
-    # --> Let's rename the output CSV to baseline_disk_usage.csv
-    ```
-*   **Result**: You will have baseline performance data, primarily `baseline_system_usage.csv`.
+| Bundle        | Name pattern                                           | Contents                                     |
+| ------------- | ------------------------------------------------------ | -------------------------------------------- |
+| Quick actions | `aod_quick_<ts>_<proto>_<anomaly>.tar.zst`             | One `*.log` file per configured quick action |
+| Capture       | `aod_capture_<ts>_<proto>_<anomaly>[_<proto>].tar.zst` | Raw packet or trace capture                  |
 
-**Step 2: Measure Performance with AOD**
+`<ts>` is a nanosecond timestamp, `<proto>` is `smb` or `nfs` (or `aod` for
+full-system snapshots), and `<anomaly>` is the anomaly type (`latency`, `error`,
+`sockconn`, `snapshot`, or `shutdown`).
 
-Now, repeat the exact same test, but with the AOD service running concurrently.
+### Quick-action bundle contents
 
-*   **Action**: In separate terminals, start the AOD service, your workload, and the monitoring scripts.
-*   **Example**:
-    ```bash
-    # Terminal 1: Start the AOD service as root
-    sudo python3 src/Controller.py
+Each enabled action writes one log file into the bundle:
 
-    # Terminal 2: Start the same workload as before
-    ./run_my_workload.sh
+| Supported actions (`actions:` key) | File in bundle   | Source                     |
+| ---------------------------------- | ---------------- | -------------------------- |
+| `dmesg`                            | `dmesg.log`      | Kernel ring buffer         |
+| `journalctl`                       | `journalctl.log` | systemd journal (windowed) |
+| `syslogs`                          | `syslogs.log`    | System log tail            |
+| `debugdata`                        | `debug_data.log` | `/proc/fs/cifs/DebugData`  |
+| `stats`                            | `cifsstats.log`  | `/proc/fs/cifs/Stats`      |
+| `mounts`                           | `mounts.log`     | Active mount inventory     |
+| `smbinfo`                          | `smbinfo.log`    | `smbinfo` output           |
 
-    # Terminal 3: Monitor system CPU and Memory
-    python3 tests/monitor.py 10 10
-    # --> Let's rename the output CSV to aod_system_usage.csv
+### Capture bundle contents
 
-    # Terminal 4: Monitor AOD's disk usage
-    python3 tests/disk_monitor.py 10 10
-    # --> Let's rename the output CSV to aod_disk_usage.csv
-    ```
-*   **Result**: You will have performance data with AOD active (`aod_system_usage.csv`) and data on its disk activity (`aod_disk_usage.csv`).
+| Capture tool (`actions:` key) | File in bundle |
+| ----------------------------- | -------------- |
+| `tcpdump`                     | `cap.pcap`     |
+| `trace-cmd`                   | `cap.dat`      |
 
-**Step 3: Compare the Results**
+Capture bundles appear a few seconds after the trigger, since the running
+recorder is given a short grace period to flush before it is bundled and
+restarted.
 
-With both sets of CSV files, you can now use the provided analysis tools to generate a clear comparison.
+### Inspecting a bundle
 
-*   **To Compare CPU and Memory Impact**:
-    Use `compare.py` or the more advanced `csv_range_compare.py` with your system usage files.
-    ```bash
-    # Generate a visual comparison of system performance
-    python3 tests/compare.py baseline_system_usage.csv aod_system_usage.csv
-    ```
-    This will create a `comparison_graph.png` showing the performance difference.
-
-*   **To Analyze Disk Usage**:
-    Use `disk_plot.py` to visualize how much disk space AOD used during the test.
-    ```bash
-    # Generate a plot of AOD's disk space consumption
-    python3 tests/disk_plot.py aod_disk_usage.csv
-    ```
-    This will create a `disk_usage_plot.png`.
-
-## 🧪 Testing the System
-
-A robust testing strategy is essential for maintaining the quality and reliability of AOD.
-
-### Unit Tests
-
-The project uses `pytest` for unit testing individual components.
+Bundles are `zstd`-compressed tar archives:
 
 ```bash
-# Install testing dependencies
-pip3 install pytest
+# List contents
+zstd -dc aod_quick_<ts>_smb_latency.tar.zst | tar -tv
 
-# Run all unit tests
-pytest tests/
+# Extract
+zstd -dc aod_quick_<ts>_smb_latency.tar.zst | tar -x
 ```
 
-### Integration Tests
+---
 
-**Currently, the project lacks a dedicated integration testing suite.** This is a critical area for future improvement.
+## Environment variables
 
-Integration tests would verify that the components work together as expected in a realistic environment. A typical test case would involve:
-1.  Starting the `linux_diagnostics` service.
-2.  Using a workload to trigger a specific anomaly (e.g., high latency).
-3.  Asserting that the `AnomalyWatcher` correctly detects the anomaly.
-4.  Verifying that the `EventDispatcher` triggers the configured `QuickActions`.
-5.  Checking the output directory to ensure the correct diagnostic files were created and have the expected content.
+| Variable           | Default                 | Purpose                                         |
+| ------------------ | ----------------------- | ----------------------------------------------- |
+| `AOD_CONFIG`       | `../config/config.yaml` | Path to the configuration file                  |
+| `AOD_LOG_LEVEL`    | `INFO`                  | Console/journal log level                       |
+| `AOD_SYSLOG_LEVEL` | `WARNING`               | Syslog log level                                |
+| `AOD_LOG_STDERR`   | `0`                     | Set to `1` to also log to stderr                |
+| `AOD_PYTHON`       | `/usr/bin/python3`      | Interpreter for the `systemd` unit (see README) |
+| `AOD_TCPDUMP_BIN`  | autodetected            | Override the `tcpdump` binary path              |
+| `AOD_TRACECMD_BIN` | autodetected            | Override the `trace-cmd` binary path            |
 
-## 🔧 Extending AOD
+---
 
-The AOD system is designed to be extensible. You can add new anomaly detectors and diagnostic actions to tailor it to your specific needs.
+## Configuration reference
 
-### Adding a New Anomaly Type
-
-Let's walk through the process using the `error` anomaly and `smbiosnoop` eBPF tool as a concrete example.
-
-#### Step 1: Add the eBPF Tool
-
-**1.1 Obtain or Create Your eBPF Tool**
-
-First, you need an eBPF tool that will produce the data for your anomaly detection. For this example, we'll use a hypothetical `smbiosnoop` tool that traces SMB I/O error codes and prints them to standard output.
-
-eBPF tools typically:
-- Monitor kernel events (syscalls, network packets, file I/O, etc.)
-- Filter relevant events based on criteria
-- Output structured data (often line-by-line text or JSON)
-
-**1.2 Place the eBPF Binary**
-
-Place your compiled eBPF tool in the `src/bin/` directory:
-
-```bash
-# Example: Copy your compiled eBPF tool
-cp /path/to/your/smbiosnoop src/bin/smbiosnoop
-chmod +x src/bin/smbiosnoop
-```
-
-**Naming Convention**: Use descriptive names that indicate the tool's purpose (e.g., `smbiosnoop`).
-
-**1.3 Test the eBPF Tool Independently**
-
-Before integrating with AOD, verify your eBPF tool works correctly:
-
-```bash
-# Test the tool directly
-sudo src/bin/smbiosnoop
-
-```
-
-**1.4 Understand the Output Format**
-
-Document the output format of your eBPF tool. This will be crucial for writing the anomaly detection logic later. 
-
-**Key Requirements:** (not sure abt this)
-- Tool must **emit events continuously** to the shared memory (/dev/shm) which the event dispatcher reads from
-- Events must follow the same format as `Event` Class specified in shared_data.py
-- Output format must be consistent and parseable
-- Tool should run indefinitely until killed (like `smbsloweraod` does)
-
-#### Step 2: Integrate the eBPF Tool in Controller
-
-The Controller class (`src/Controller.py`) manages the execution of eBPF tools. You need to register your new tool and define how to build its command line.
-
-**2.1 Register the Tool in `__init__` Method**
-
-Add your tool to the `tool_cmd_builders` dictionary:
-
-```python
-# src/Controller.py (in __init__ method around line 63)
-
-def __init__(self, config_path: str):
-    # ...existing code...
-    
-    self.tool_cmd_builders = {
-        "smbslower": self._get_smbsloweraod_cmd,
-        "smbiosnoop": self._get_smbiosnoop_cmd,  # Add this line
-    }
-    
-    # ...existing code...
-```
-
-**2.2 Create the Command Builder Function**
-
-Add a method to build the command for executing your eBPF tool. Place this method with the other command builders (around line 136):
-
-```python
-# src/Controller.py
-
-def _get_smbiosnoop_cmd(self) -> list[str]:
-    """Build command for smbiosnoop eBPF tool."""
-    # Get configuration for error anomaly if it exists
-    error_anomaly = self.config.guardian.anomalies.get("error")
-    
-    # Build the command array
-    ebpf_binary_path = os.path.join(os.path.dirname(__file__), "bin", "smbiosnoop")
-    cmd = [ebpf_binary_path]
-    
-    # Add parameters based on configuration (optional)
-    if error_anomaly:
-        # Example: Add specific error codes to track
-        track_codes = error_anomaly.get("track_codes", [])
-        if track_codes:
-            cmd.extend(["-e", ",".join(track_codes)])
-    
-    return cmd
-```
-
-**2.3 Command Builder Best Practices**
-
-- Always return a list of strings (command + arguments)
-- Use `os.path.join(os.path.dirname(__file__), "bin", "tool_name")` for the binary path
-- Extract relevant configuration from `self.config.guardian.anomalies`
-- Handle missing configuration gracefully with sensible defaults
-- Follow the pattern used by `_get_smbsloweraod_cmd()` for consistency
-
-**Key Reference**: Look at the existing `_get_smbsloweraod_cmd()` method in `src/Controller.py` (lines 136-151) to see how the current eBPF tool is integrated.
-
-#### Step 3: Create the Anomaly Handler
-
-Anomaly handlers analyze batches of events from eBPF tools and determine if an anomaly has occurred. Each handler implements specific detection logic for a particular type of anomaly.
-
-**3.1 Create the Handler File**
-
-Create a new Python file in `src/handlers/` following the naming convention `{anomaly_type}_anomaly_handler.py`:
-
-```bash
-# Create the new handler file
-touch src/handlers/error_anomaly_handler.py
-```
-
-**3.2 Implement the Handler Class**
-
-Use this template for your handler:
-
-```python
-# src/handlers/error_anomaly_handler.py
-
-import logging
-import numpy as np
-from base.AnomalyHandlerBase import AnomalyHandler
-
-logger = logging.getLogger(__name__)
-
-class ErrorAnomalyHandler(AnomalyHandler):
-    """Detects anomalies based on your specific criteria."""
-    
-    def __init__(self, config):
-        super().__init__(config)
-        # Initialize anything you need from self.config
-        # e.g., thresholds, tracking parameters, etc.
-    
-    def detect(self, events_batch: np.ndarray) -> bool:
-        """
-        Analyze events_batch and return True if anomaly detected.
-        
-        Args:
-            events_batch: NumPy structured array with parsed eBPF tool output
-        
-        Returns:
-            bool: True if anomaly detected, False otherwise
-        """
-        # Add your detection logic here
-        # Return True if anomaly detected, False otherwise
-        return False
-```
-
-**Implementation Notes:**
-- **Configuration**: Access config values via `self.config.your_field`
-- **Data Structure**: `events_batch` contains parsed eBPF tool output as NumPy structured array
-- **Performance**: Keep detection logic efficient as it runs frequently. **Use numpy as much as possible for performance**.
-
-#### Step 4: Register the New Handler
-
-To make your new anomaly handler available to the system, you need to register it in three places.
-
-**4.1 Add the Anomaly Type to the Enum**
-
-First, add your new anomaly type to the enum in `src/utils/anomaly_type.py`:
-
-```python
-# src/utils/anomaly_type.py
-
-class AnomalyType(Enum):
-    """Enumeration for different types of anomalies that can be detected."""
-    
-    LATENCY = "latency"
-    ERROR = "error"  # Add this line if not already present
-    # Add more types as needed
-
-
-ANOMALY_TYPE_TO_TOOL_ID = {
-    AnomalyType.LATENCY: 0,
-    AnomalyType.ERROR: 1,  # Add this line with unique ID, find out what is the tool id for smbiosnoop in the smbiosnoop output (1 is just an example, it might be wrong)
-    # Add more as needed
-}
-```
-
-**4.2 Import and Register in AnomalyWatcher**
-
-In `src/AnomalyWatcher.py`, add the import and register your handler:
-
-```python
-# src/AnomalyWatcher.py (around lines 10-14)
-
-from utils.anomaly_type import AnomalyType, ANOMALY_TYPE_TO_TOOL_ID
-from handlers.latency_anomaly_handler import LatencyAnomalyHandler
-from handlers.error_anomaly_handler import ErrorAnomalyHandler  # Add this import
-from base.AnomalyHandlerBase import AnomalyHandler
-
-# ...existing code...
-
-# Maps enum to anomaly handler classes (around lines 19-23)
-ANOMALY_HANDLER_REGISTRY = {
-    AnomalyType.LATENCY: LatencyAnomalyHandler,
-    AnomalyType.ERROR: ErrorAnomalyHandler,  # Add this line
-    # Add more types here as needed
-}
-```
-
-**4.3 Verification**
-
-After making these changes, verify the registration worked:
-
-```bash
-# Check for syntax errors
-python3 -m py_compile src/utils/anomaly_type.py
-python3 -m py_compile src/AnomalyWatcher.py
-python3 -m py_compile src/handlers/error_anomaly_handler.py
-
-# Test that imports work correctly
-python3 -c "from src.handlers.error_anomaly_handler import ErrorAnomalyHandler; print('Handler import successful')"
-```
-
-**Registration Pattern**: The system uses this three-tier registration:
-1. **Enum**: Defines the anomaly type constant
-2. **Tool ID**: Maps anomaly types to unique integer IDs (used internally)
-3. **Registry**: Maps enum values to handler classes for instantiation
-
-#### Step 5: Update Configuration
-
-The configuration defines how your new anomaly type behaves, what tools it uses, and what actions it triggers. The example `error` anomaly configuration is already present in `config/config.yaml`.
-
-**5.1 Review Existing Configuration**
-
-Check the current error anomaly configuration in `config/config.yaml` (lines 13-28):
+AODv2 reads a single YAML file (`/etc/aodv2/config.yaml` for packaged installs).
+The top-level structure is:
 
 ```yaml
-# config/config.yaml
-guardian:
-  anomalies:
-    error:
-      type: "Error"                    # Must match the enum value (ERROR = "error")(case-insensitive)
-      tool: "smbiosnoop"              # Must match key in Controller.tool_cmd_builders
-      mode: "trackonly"               # Options: all, trackonly, excludeonly
-      acceptable_count: 10            # Number of tracked errors to trigger anomaly
-      track_codes:                    # Error codes to track
-        - EACCES                      # Access denied
-        - EAGAIN                      # Resource temporarily unavailable  
-        - EIO                         # I/O error
-      actions:                        # Quick actions to trigger on anomaly
-        - dmesg
-        - journalctl
+watch_interval_sec: 60 # analysis cadence (seconds)
+aod_output_dir: /var/log/aod # base directory for all output
+
+anomalies: { ... } # what to monitor and collect (see below)
+cleanup: { ... } # retention policy
 ```
 
-**5.2 Configuration Fields Explained**
+### Global settings
 
-**Required Fields (Mandatory):**
-- **`type`**: Must match your AnomalyType enum value (case-insensitive) *(covered in Step 4.1)*
-- **`tool`**: Must match a key in Controller's init file `self.tool_cmd_builders` dictionary *(covered in Step 2.1)*
-- **`actions`**: List of QuickActions to execute when anomaly detected *(see "Adding a New Quick Action" section)*
+| Key                  | Meaning                                                                   |
+| -------------------- | ------------------------------------------------------------------------- |
+| `watch_interval_sec` | How often event batches are analysed.                                     |
+| `aod_output_dir`     | Base output directory. `batches/` and `captures/` are created beneath it. |
 
-**Optional Fields:**
-- **`mode`**: Filtering mode for the eBPF tool (`all`, `trackonly`, `excludeonly`) - defaults to "all"
-- **`acceptable_count`**: Threshold for triggering anomaly detection - defaults vary by handler
-- **Custom fields**: Handler-specific configuration (e.g., `track_codes` for error anomaly)
+The `journalctl` / `dmesg` lookback window is fixed at 5 minutes and is not
+configurable.
 
-**Minimal Configuration Example:**
-```yaml
-guardian:
-  anomalies:
-    your_anomaly:
-      type: "YourType"        # Required: matches AnomalyType enum
-      tool: "your_ebpf_tool"  # Required: matches Controller tool key
-      actions:                # Required: at least one action
-        - dmesg
-```
+### `anomalies`
 
-**5.3 Customize for Your Use Case**
-
-Modify the configuration to match your specific requirements:
+Anomalies are keyed by **protocol** (`smb`, `nfs`) and then by **anomaly type**
+(`latency`, `error`, `sockconn`). Each entry names the source tool, its
+detection thresholds, and the diagnostic actions to run when it fires.
 
 ```yaml
-# Example: Custom error tracking configuration
-guardian:
-  anomalies:
-    error:
-      type: "Error"
-      tool: "smbiosnoop"              # Your eBPF tool name
-      mode: "trackonly"
-      acceptable_count: 5             # Lower threshold for more sensitive detection
-      track_codes:                    # Add/remove error codes as needed
-        - EACCES
-        - EIO
-        - ENOSPC                      # No space left on device
-        - ETIMEDOUT                   # Connection timed out
-      actions:
-        - dmesg                       # Kernel messages
-        - journalctl                  # System logs
-        - debugdata                   # Custom diagnostic data
+anomalies:
+  smb:
+    latency:
+      tool: "smbslower" # source eBPF probe
+      mode: "all" # all | trackonly | excludeonly
+      acceptable_count: 10 # breaches tolerated per watch_interval_sec
+      default_threshold_ms: 20 # default latency threshold
+      track_commands: # per-command overrides
+        - command: SMB2_WRITE
+          threshold: 50
+      actions: # diagnostics to collect on trigger
+        dmesg:
+        journalctl:
+        stats:
+        tcpdump: ["-s", "65536", "-B", "10240", "-C", "2", "-W", "100"]
 ```
 
-**5.4 Configuration Validation**
+**Common fields:**
 
-Test your configuration syntax and integration:
+| Field                  | Applies to     | Meaning                                                                                            |
+| ---------------------- | -------------- | -------------------------------------------------------------------------------------------------- |
+| `tool`                 | all            | Source tool for the anomaly (must be valid for the protocol/type)                                  |
+| `acceptable_count`     | all            | Number of matching events tolerated within `watch_interval_sec` before triggering                  |
+| `mode`                 | latency        | `all` (defaults + `track_commands` overrides, then `exclude_commands` dropped), `trackonly` (only `track_commands`), `excludeonly` (all except `exclude_commands`) |
+| `default_threshold_ms` | latency        | Latency threshold applied to commands without an explicit override                                 |
+| `track_commands`       | latency, error | Commands to track; latency uses `{command, threshold}` pairs, error uses a name list               |
+| `track_errors`         | error          | Error codes to track (e.g. `NFS4ERR_BAD_STATEID`)                                                  |
+| `exclude_commands`     | latency        | Commands to exclude; honored in `all` and `excludeonly` modes, ignored (with a warning) in `trackonly` |
+| `actions`              | all            | Diagnostics to collect on trigger (see below)                                                      |
 
-```bash
-# Validate YAML syntax
-python3 -c "import yaml; yaml.safe_load(open('config/config.yaml'))"
+For `error`, at least one of `track_commands` / `track_errors` must be
+non-empty. `sockconn` has no per-item thresholds.
 
-# Test that AOD can parse the configuration
-python3 -c "from src.ConfigManager import ConfigManager; ConfigManager('config/config.yaml')"
+### `actions`
 
-# Test configuration loading for your specific anomaly
-python3 -c "
-from src.ConfigManager import ConfigManager
-config = ConfigManager('config/config.yaml')
-print('Your anomaly config:', config.guardian.anomalies.get('your_anomaly_name'))
-"
-```
+The `actions:` block lists the diagnostics to collect when the anomaly fires.
+Keys fall into two groups:
 
-**Key Integration Points**: The configuration values are accessed in your handler via direct attributes on `self.config`:
+- **Quick actions** — `dmesg`, `journalctl`, `syslogs`, `debugdata`, `stats`,
+  `mounts`, `smbinfo`. Take no arguments; leave the value empty.
+- **Captures** — `tcpdump`, `trace-cmd`. Take a list of CLI arguments. AODv2
+  supplies the output file and protocol filter itself; the following are
+  required and reserved:
 
-- `self.config.type` - Anomaly type string
-- `self.config.tool` - eBPF tool name  
-- `self.config.acceptable_count` - Threshold for triggering anomaly
-- `self.config.track` - Dictionary of tracked items (varies by anomaly type)
-- `self.config.actions` - List of QuickActions to execute
-- `self.config.default_threshold_ms` - Optional default threshold (may be None)
+  | Tool        | You must supply                     | AODv2 reserves |
+  | ----------- | ----------------------------------- | -------------- |
+  | `tcpdump`   | `-C` and `-W` (rotation size/count) | `-w`           |
+  | `trace-cmd` | `-e` (at least one event)           | `-o`           |
 
-**Example**: In `latency_anomaly_handler.py`, the config is accessed as:
-```python
-self.acceptable_count = self.config.acceptable_count
-for smb_cmd_id, threshold in self.config.track.items():
-    # Process tracked commands and thresholds
-```
+### Caveats
 
-#### Step 6: ConfigManager Integration (For New Anomaly Types Only)
+Captures are long-running processes with lifecycle constraints that quick
+actions do not have. Keep the following in mind when configuring them:
 
-**Note**: For the error anomaly example, ConfigManager integration is already complete. **Skip this step if using the error example**.
+- **Dropped captures.** If a capture supervisor is busy and drops a queued
+  snapshot, a `WARNING` naming the dropped `batch_id` is logged. If a `SIGUSR1`
+  is received during shutdown, it is ignored to avoid racing the shutdown dump.
+- **One capture process per protocol.** A single capture process serves every
+  anomaly of a given protocol. Consequently:
+  - A capture tool may be bound to **only one protocol** across the whole
+    config. Configuring, say, `tcpdump` under both `smb` and `nfs` is rejected
+    at startup.
+  - Multiple anomalies of the same protocol may list the same capture tool, but
+    they **must supply identical CLI args** — the config is rejected if they
+    conflict.
+- **Snapshots are coalesced.** If several snapshot requests for one protocol
+  arrive close together, they are drained into a single bundle reflecting one
+  recorder state; you get one capture bundle, not one per request.
+- **Cooldown drops overlapping requests.** While a capture is being stopped,
+  bundled, and restarted (including the post-restart warmup), further snapshot
+  requests for that protocol are dropped. A `WARNING` names the dropped
+  `batch_id` and points at the nearest `aod_capture_*` bundle that shares the
+  recorder state.
+- **Repeated spawn failures disable the capture.** If a capture process fails to
+  spawn 3 times in a row, that protocol's capture is disabled for the remainder
+  of the run and subsequent snapshot requests are dropped with a `WARNING`.
+  Quick-action bundles are still produced. Check the logs for spawn errors
+  (missing `tcpdump` / `trace-cmd` binary, insufficient privileges, invalid
+  args) and restart the service once resolved.
+- **Bundles lag the trigger.** On each snapshot the running recorder is given a
+  short grace period to flush before it is stopped and bundled, so a capture
+  bundle appears a few seconds after the corresponding quick-action bundle.
 
-If you're adding a completely new anomaly type (not error), you need to add ConfigManager support to parse and validate your custom configuration fields.
+### `cleanup`
 
-**6.1 Add to Configuration Dispatch**
-
-Add your anomaly type to the dispatch dictionary in `_get_track_for_anomaly` method:
-
-```python
-# src/ConfigManager.py (around lines 79-85)
-
-dispatch = {
-    AnomalyType.LATENCY: self._get_latency_track_cmds,
-    AnomalyType.ERROR: self._get_error_track_cmds,
-    AnomalyType.YOUR_TYPE: self._get_your_type_track_cmds,  # Add this line
-    # Add more types here as needed
-}
-```
-
-**6.2 Implement Track Commands Method**
-
-Create a method to parse your anomaly's configuration. Study `_get_latency_track_cmds` and `_get_error_track_cmds` in ConfigManager for reference:
-
-```python
-# src/ConfigManager.py
-
-def _get_your_type_track_cmds(self, anomaly):
-    """Parse and validate your anomaly type tracking commands from config."""
-    # 1. Extract configuration fields from YAML
-    track_items = anomaly.get("track_items", [])
-    exclude_items = anomaly.get("exclude_items", [])
-    mode = anomaly.get("mode", "all")
-    
-    # 2. Normalize track/exclude lists based on mode
-    track_items, exclude_items = self._normalize_track_and_exclude(
-        mode, track_items, exclude_items, "your_anomaly_type"
-    )
-    
-    # 3. Validate items against your predefined list
-    all_valid_items = ["item1", "item2", "item3"]  # Your predefined items, can specify in shared_data.py and extract from there also
-    self._validate_cmds(all_valid_items, track_items, exclude_items)
-    # can use or create other validation functions like _validate_smb_thresholds if needed
-    
-    # 4. Build and return the tracking configuration
-    # This becomes self.config.track in your handler
-    return self._build_your_item_map(mode, track_items, exclude_items)
-    # look at helpers to see if you can reuse any of them for your anomaly type
-```
-
-**6.3 Available Helper Functions**
-
-The ConfigManager provides several pre-existing helper functions you can reuse:
-
-**Validation Functions:**
-```python
-# Check items exist in predefined list, no duplicates, no overlap
-self._validate_cmds(all_items, track_items, exclude_items)
-
-# Check individual list for validity and duplicates  
-self._check_codes(items, all_valid_items, "item type")
-
-# Validate numerical thresholds (for latency-like patterns)
-self._validate_smb_thresholds(track_commands)  # Checks threshold >= 0
-```
-
-**Mode-Based Filtering:**
-```python
-# Handle trackonly/excludeonly/all modes with warnings
-track_items, exclude_items = self._normalize_track_and_exclude(
-    mode, track_items, exclude_items, "your_anomaly_type"
-)
-
-# Build simple index mapping based on mode (like error codes)
-return self._get_track_codes(mode, ALL_YOUR_ITEMS, track_items, exclude_items)
-```
-
-**6.4 Implementation Patterns**
-
-Choose the pattern that best fits your anomaly type (or create a new one):
-
-**Pattern A: Simple Item List** (like error codes):
-```python
-def _get_your_type_track_cmds(self, anomaly):
-    """For simple list-based tracking (like error codes)."""
-    track_codes = anomaly.get("track_codes", [])
-    exclude_codes = anomaly.get("exclude_codes", [])
-    mode = anomaly.get("mode", "all")
-    
-    # Normalize and validate
-    track_codes, exclude_codes = self._normalize_track_and_exclude(
-        mode, track_codes, exclude_codes, "your_type"
-    )
-    self._validate_cmds(ALL_YOUR_CODES, track_codes, exclude_codes)
-    
-    # Use existing helper for index mapping
-    return self._get_track_codes(mode, ALL_YOUR_CODES, track_codes, exclude_codes)
-```
-
-**Pattern B: Complex Threshold Mapping** (like latency commands):
-```python
-def _get_your_type_track_cmds(self, anomaly):
-    """For complex items with thresholds/parameters."""
-    track_commands = anomaly.get("track_commands", [])
-    exclude_commands = anomaly.get("exclude_commands", [])
-    mode = anomaly.get("mode", "all")
-    default_threshold = anomaly.get("default_threshold", 100)
-    
-    # Normalize and validate
-    track_commands, exclude_commands = self._normalize_track_and_exclude(
-        mode, track_commands, exclude_commands, "your_type"
-    )
-    
-    # Custom validation for your command structure
-    self._validate_your_commands(track_commands, exclude_commands)
-    # eg. self._validate_smb_thresholds(track_commands, exclude_commands)
-    
-    # Build custom mapping
-    return self._build_your_command_map(mode, track_commands, exclude_commands, default_threshold)
-```
-
-**6.5 Real Implementation Examples**
-
-Here's how the existing patterns work:
-
-**Error Anomaly** (Simple pattern):
-```python
-def _get_error_track_cmds(self, anomaly):
-    track_codes = anomaly.get("track_codes", [])
-    exclude_codes = anomaly.get("exclude_codes", [])
-    error_mode = anomaly.get("mode", "all")
-    
-    # Uses ALL_ERROR_CODES = list(errno.errorcode.values())
-    track_codes, exclude_codes = self._normalize_track_and_exclude(
-        error_mode, track_codes, exclude_codes, "error"
-    )
-    
-    self._validate_cmds(list(ALL_ERROR_CODES), track_codes, exclude_codes)
-    
-    # Returns: {error_index: None, ...}
-    return self._get_track_codes(error_mode, ALL_ERROR_CODES, track_codes, exclude_codes)
-```
-
-**Latency Anomaly** (Complex pattern):
-```python
-def _get_latency_track_cmds(self, anomaly):
-    track_commands = anomaly.get("track_commands", [])
-    exclude_commands = anomaly.get("exclude_commands", [])
-    latency_mode = anomaly.get("mode", "all")
-    default_threshold = anomaly.get("default_threshold_ms", 10)
-    
-    # Custom validation for SMB commands
-    self._validate_smb_commands(track_commands, exclude_commands)
-    
-    # Returns: {cmd_id: threshold_ms, ...}
-    return self._build_latency_command_map(
-        latency_mode, track_commands, exclude_commands, default_threshold
-    )
-```
-
-**6.6 Helper Function Details**
-
-**`_normalize_track_and_exclude(mode, track_items, exclude_items, type_name)`:**
-- Handles `trackonly`, `excludeonly`, `all` modes
-- Issues warnings and clears irrelevant lists
-- Returns normalized `(track_items, exclude_items)` tuple
-
-**`_validate_cmds(all_items, track_items, exclude_items)`:**
-- Validates items exist in `all_items` list
-- Checks for duplicates within each list
-- Ensures no overlap between track and exclude lists
-
-**`_check_codes(codes, all_codes, code_type)`:**
-- Validates individual list against predefined values
-- Warns about duplicates within the list
-- Raises ValueError for invalid codes
-
-**`_get_track_codes(mode, all_codes, track_codes, exclude_codes)`:**
-- Builds simple `{index: None}` mapping based on mode
-- Uses `ALL_ERROR_CODES.index(code)` for indexing
-- Handles trackonly/excludeonly/all logic automatically
-
-**`_validate_smb_thresholds(track_commands)`:**
-- Validates threshold values are numbers >= 0
-- Used for latency-style configurations with thresholds
-
-The returned value becomes `self.config.track` in your anomaly handler.
-
-
-
-### Adding a New Quick Action
-
-Quick Actions are simple, standalone diagnostic commands that are triggered when any anomaly is detected.
-
-#### Step 1: Create the Quick Action Class
-Create a new file in `src/handlers/`, for example, `LsofQuickAction.py`:
-
-```python
-# src/handlers/LsofQuickAction.py
-
-import subprocess
-from pathlib import Path
-from base.QuickAction import QuickAction
-
-class LsofQuickAction(QuickAction):
-    """Captures network connections using lsof command."""
-    
-    def __init__(self, batches_root: str, params=None):
-        """Initialize the QuickAction.
-        
-        Args:
-            batches_root (str): Root directory for log batches.
-            params: Optional parameters for the action.
-        """
-        super().__init__(batches_root, "lsof.log")
-        # Add any self.params if needed
-    
-    def get_command(self) -> tuple:
-        """Return command to execute.
-        
-        Returns:
-            tuple: (command_array, execution_type)
-                   execution_type: "cmd" for subprocess, "cat" for simple file operation
-        """
-        return ["lsof", "-i"], "cmd"
-```
-
-#### Step 2: Register in LogCollector
-Import and register your QuickAction in `src/LogCollector.py`:
-
-```python
-# src/LogCollector.py
-
-# ...existing imports...
-from handlers.LsofQuickAction import LsofQuickAction
-
-class LogCollector:
-    def __init__(self, controller):
-        # ...existing code...
-        
-        self.action_factory = {
-            "journalctl": lambda: JournalctlQuickAction(self.aod_output_dir, self.anomaly_interval),
-            # ...existing actions...
-            "syslogs": lambda: SysLogsQuickAction(self.aod_output_dir, num_lines=100),
-            "lsof": lambda: LsofQuickAction(self.aod_output_dir, params),  # Add this line
-        }
-        
-        # ...existing code...
-```
-
-#### Step 3: Update Configuration
-Add your new action to the `watcher: actions:` list in `config/config.yaml`:
+Governs autonomous retention in `aod_output_dir`.
 
 ```yaml
-# config/config.yaml
-watcher:
-  actions:
-    - dmesg
-    - journalctl
-    - lsof  # Add your new action here
+cleanup:
+  cleanup_interval_sec: 300 # how often cleanup runs
+  max_log_age_days: 2 # delete bundles older than this
+  max_total_log_size_mb: 1024 # cap total bundle size; oldest removed first
 ```

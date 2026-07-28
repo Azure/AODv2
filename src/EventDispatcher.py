@@ -1,202 +1,138 @@
-"""Handles reading events from shared memory, batching them, and dispatching to
-the controller's event queue."""
+"""Consumer of events from the pinned BPF ringbuf at /sys/fs/bpf/aodrb.
+Drains the ringbuffer as fast as possible and forwards event batches to eventQueue.
+"""
 
-# import ctypes
+import ctypes
+import errno
 import logging
 import os
-import mmap
 import time
-import struct
+
 import numpy as np
 
-from shared_data import SHM_NAME, SHM_SIZE, SHM_DATA_SIZE, HEAD_TAIL_BYTES, event_dtype, MAX_WAIT
+from utils.shared_data import event_dtype, RB_MAX_RECORDS, RINGBUF_PINNED
 
 logger = logging.getLogger(__name__)
 
-# Ensure that the size of Event and event_dtype is same
-# assert ctypes.sizeof(Event) == event_dtype.itemsize, (
-#     f"Size mismatch: ctypes Event is {ctypes.sizeof(Event)} bytes, "
-#     f"numpy event_dtype is {event_dtype.itemsize} bytes"
-# )
+# ---------------------------------------------------------------------------
+# Load the ring buffer shim shared library (libringbuf_shim.so)
+# ---------------------------------------------------------------------------
+_SHIM_PATH = os.path.join(os.path.dirname(__file__), "bin", "libringbuf_shim.so")
+_shim = ctypes.CDLL(_SHIM_PATH)
+
+_shim.rb_open.argtypes = [ctypes.c_char_p]
+_shim.rb_open.restype = ctypes.c_void_p
+
+_shim.rb_poll_into.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_int,
+    ctypes.c_int,
+]
+_shim.rb_poll_into.restype = ctypes.c_int
+
+_shim.rb_close.argtypes = [ctypes.c_void_p]
+_shim.rb_close.restype = None
 
 
 class EventDispatcher:
-    """Polls C ring buffer and drains all events.
-
-    Parses the raw c struct to Python numpy struct array and sends it to
-    eventQueue.
+    """Polls BPF ring buffer via C shim and drains all events.
+    Uses libringbuf_shim.so to bulk-read events from the kernel ring buffer
+    directly into a numpy array.
     """
+
+    POLL_TIMEOUT_MS = 1000  # only affects shutdown responsiveness
 
     def __init__(self, controller):
         """Initialize the EventDispatcher."""
         self.controller = controller
-        self.head_tail_fmt = "<Q" if HEAD_TAIL_BYTES == 8 else "<I"
+        self._ctx = None  # Lazily Create
+        # Scratch buffer reused across polls. Sized to the kernel ringbuf
+        self._scratch = np.empty(RB_MAX_RECORDS, dtype=event_dtype)
         if __debug__:
-            logger.info("EventDispatcher initialized, shared memory: %s", SHM_NAME)
-        self.shm_fd, self.shm_map = self._setup_shared_memory()
-
-    def _setup_shared_memory(self) -> tuple[int, mmap.mmap]:
-        """Open, create, size, and memory-map the shared memory segment.
-
-        Returns:
-            Tuple[int, mmap.mmap]: The file descriptor and mmap object.
-        """
-        shm_created = False
-        shm_file_path = f"/dev/shm{SHM_NAME}"
-        try:
-            shm_fd = os.open(shm_file_path, os.O_RDWR)
-            if __debug__:
-                logger.info("Opened existing shared memory: %s", shm_file_path)
-        except FileNotFoundError:
-            # This is expected on first startup - create new shared memory
-            if __debug__:
-                logger.info("Shared memory not found, creating new: %s", shm_file_path)
-            shm_fd = os.open(shm_file_path, os.O_RDWR | os.O_CREAT, 0o666)
-            shm_created = True
-        except Exception as e:
-            logger.error("Failed to open shared memory: %s", e)
-            raise
-
-        if shm_created:
-            try:
-                os.ftruncate(shm_fd, SHM_SIZE)
-            except Exception as e:
-                logger.error("Failed to set size of shared memory: %s", e)
-                os.close(shm_fd)
-                raise
-
-        try:
-            shm_map = mmap.mmap(
-                shm_fd, SHM_SIZE, flags=mmap.MAP_SHARED, prot=mmap.PROT_READ | mmap.PROT_WRITE
+            logger.info(
+                "EventDispatcher initialized, ring buffer: %s, scratch capacity: %d",
+                RINGBUF_PINNED.decode(),
+                RB_MAX_RECORDS,
             )
-        except Exception as e:
-            logger.error("Failed to map shared memory: %s", e)
-            os.close(shm_fd)
-            raise
 
-        return shm_fd, shm_map
+    def _open_ringbuf(self, timeout_sec: int = 7) -> None:
+        """Open the ring buffer context with a timeout. Raises TimeoutError on failure."""
+        if self._ctx:
+            return  # already open
 
-    def _get_buffer_size(self) -> int:
-        """Tells how much data is available in the shared memory buffer."""
-        self.shm_map.seek(0)
-        head = struct.unpack_from(self.head_tail_fmt, self.shm_map, 0)[0]
-        tail = struct.unpack_from(self.head_tail_fmt, self.shm_map, HEAD_TAIL_BYTES)[0]
-        if tail == head:
-            return 0
-        if tail < head:
-            return head - tail
-        # Wrap-around case
-        return (SHM_DATA_SIZE - tail) + head
+        deadline = time.monotonic() + timeout_sec
+        while not self.controller.stop_event.is_set():
+            self._ctx = _shim.rb_open(RINGBUF_PINNED)
+            if self._ctx:
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Failed to open ring buffer at {RINGBUF_PINNED.decode()} within {timeout_sec} seconds"
+                )
+            if self.controller.stop_event.wait(timeout=0.2):
+                return
 
     def run(self) -> None:
-        """Loop: poll eventQueue, detect anomalies, and put actions into anomalyActionQueue"""
+        """Poll the BPF ring buffer, drain events, and forward to eventQueue."""
+        self._open_ringbuf()
+        if not self._ctx:
+            return
+        total_events_processed = 0
+        batch_count = 0
         if __debug__:
             logger.info("EventDispatcher started running")
-        timer = 3
-        if __debug__:
-            total_events_processed = 0
-            batch_count = 0
-            total_latency = 0
-        
-        while not self.controller.stop_event.is_set():
-            no_of_events = self._get_buffer_size() // event_dtype.itemsize
-            if no_of_events >= 10 or timer == 0:
-                timer = 3  # reset timer
-                if no_of_events == 0:
+
+        scratch = self._scratch
+        capacity = scratch.shape[0]
+        scratch_ptr = scratch.ctypes.data
+
+        try:
+            while not self.controller.stop_event.is_set():
+                count = _shim.rb_poll_into(
+                    self._ctx, scratch_ptr, capacity, self.POLL_TIMEOUT_MS
+                )
+
+                if count < 0:
+                    if count == -errno.EINTR:
+                        continue
+                    logger.error("ring_buffer__poll error: %d", count)
+                    break
+
+                if count == 0:
                     continue
-                    
-                if __debug__:
-                    logger.debug("Processing %d events from shared memory", no_of_events)
-                
-                time.sleep(MAX_WAIT)
-                raw_events = self._poll_shm_buffer()
-                parsed_events = self._parse(raw_events)
-                self.controller.eventQueue.put(parsed_events)
-                
-                # Metrics tracking
+
+                # Copy out only the live slice; the scratch buffer is reused on the
+                # next poll, so we must not hand a view of it to the queue.
+                self.controller.eventQueue.put(scratch[:count].copy())
+
                 if __debug__:
                     batch_count += 1
-                    batch_size = len(parsed_events)
-                    total_events_processed += batch_size
-                    
-                    # Calculate average latency for this batch
-                    if batch_size > 0 and 'latency_ns' in parsed_events.dtype.names:
-                        batch_latency = parsed_events['latency_ns'].sum()
-                        total_latency += batch_latency
-                    
-                    if batch_count % 10 == 0:  # Log metrics every 10 batches
-                        avg_events_per_batch = total_events_processed / batch_count
-                        avg_latency_ms = (total_latency / total_events_processed / 1_000_000) if total_events_processed > 0 else 0
-                        logger.debug("EventDispatcher metrics: batches=%d, total_events=%d, avg_per_batch=%.1f, avg_latency=%.2fms", 
-                                   batch_count, total_events_processed, avg_events_per_batch, avg_latency_ms)
-            else:
-                time.sleep(1)
-                timer -= 1
-        
-        if __debug__:
-            avg_latency_ms = (total_latency / total_events_processed / 1_000_000) if total_events_processed > 0 else 0
-            logger.info("EventDispatcher stopping. Final metrics: batches=%d, total_events=%d, avg_latency=%.2fms", 
-                       batch_count, total_events_processed, avg_latency_ms)
-        self.controller.eventQueue.put(None) #send sentinal to the queue
+                    total_events_processed += count
+                    if batch_count % 10 == 0:
+                        logger.debug(
+                            "EventDispatcher metrics: batches=%d, total_events=%d, "
+                            "avg_per_batch=%.1f",
+                            batch_count,
+                            total_events_processed,
+                            total_events_processed / batch_count,
+                        )
 
-    def _poll_shm_buffer(self) -> bytes:
-        """Fetch a batch of raw events from shared memory."""
-
-        self.shm_map.seek(0)
-        head = struct.unpack_from(self.head_tail_fmt, self.shm_map, 0)[0]
-        tail = struct.unpack_from(self.head_tail_fmt, self.shm_map, HEAD_TAIL_BYTES)[0]
-
-        if tail == head:
-            # no events to read
-            return b""
-
-        if tail < head:
-            available_bytes = head - tail
-            self.shm_map.seek(2 * HEAD_TAIL_BYTES + tail)
-            raw = self.shm_map.read(available_bytes)
-            tail = (tail + available_bytes) % SHM_DATA_SIZE
-            self._update_tail(tail)
-            return raw
-
-        # Wrap-around case
-        available_bytes = (SHM_DATA_SIZE - tail) + head
-        bytes_to_end = SHM_DATA_SIZE - tail
-        self.shm_map.seek(2 * HEAD_TAIL_BYTES + tail)
-        raw1 = self.shm_map.read(bytes_to_end)
-        self.shm_map.seek(2 * HEAD_TAIL_BYTES)
-        raw2 = self.shm_map.read(head)
-        tail = (tail + available_bytes) % SHM_DATA_SIZE
-        self._update_tail(tail)
-        return raw1 + raw2
-
-    def _update_tail(self, tail) -> None:
-        self.shm_map.seek(HEAD_TAIL_BYTES)
-        self.shm_map.write(struct.pack(self.head_tail_fmt, tail))
-        self.shm_map.flush()
-
-    def _parse(self, raw: bytes) -> np.ndarray | None:
-        """Convert raw struct bytes to a numpy array of events (batch)."""
-        if not raw:
-            return None
-        return np.frombuffer(raw, dtype=event_dtype)
+            if __debug__:
+                logger.info(
+                    "EventDispatcher stopping. Final metrics: batches=%d, total_events=%d",
+                    batch_count,
+                    total_events_processed,
+                )
+        finally:
+            # Sentinel for downstream consumers. cleanup() is owned by Controller
+            # so the supervisor can restart run() without losing the ring buffer ctx.
+            self.controller.eventQueue.put(None)
 
     def cleanup(self) -> None:
-        """Clean up resources used by the EventDispatcher."""
-
-        # Shared memory cleanup
-        try:
-            # Read head and tail before closing mmap
-            self.shm_map.seek(0)
-            head = struct.unpack_from(self.head_tail_fmt, self.shm_map, 0)[0]
-            tail = struct.unpack_from(self.head_tail_fmt, self.shm_map, 8)[0]
-            if head != tail:
-                logger.warning("Head and tail are not equal, indicating potential data loss (head=%d, tail=%d)", 
-                             head, tail)
-
-            self.shm_map.close()
-            os.close(self.shm_fd)
-            os.unlink(f"/dev/shm{SHM_NAME}")
+        """Release the ring buffer context."""
+        if self._ctx:
+            _shim.rb_close(self._ctx)
+            self._ctx = None
             if __debug__:
-                logger.info("Shared memory cleaned up")
-        except OSError as e:
-            logger.error("Error cleaning up shared memory: %s", e)
+                logger.info("Ring buffer context closed")

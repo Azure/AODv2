@@ -1,6 +1,49 @@
+[project]
+name = "aodv2"
+version = "0.1.0"
+description = "Always-on diagnostic daemon for Linux SMB and NFS"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.21.0",
+  "zstandard>=0.19.0",
+  "PyYAML>=6.0",
+]
+authors = [
+  {name = "Meetakshi Setiya", email = "msetiya@microsoft.com"},
+  {name = "Sreyas Lakkimsetti", email = "slakkimsetti@microsoft.com"}
+]
+maintainers = [
+  {name = "Meetakshi Setiya", email = "msetiya@microsoft.com"},
+  {name = "Shyam Prasad", email = "sprasad@microsoft.com"}
+]
+
+[project.optional-dependencies]
+dev = [
+    "pandas>=1.5.0",
+    "matplotlib>=3.5.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=1.0",
+    "black",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = []
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+markers = [
+    "slow: long-running soak/integration tests (deselect with -m 'not slow')",
+]
+
 [tool.black]
-line-length = 100
-target-version = ['py39']
+line-length = 85
+target-version = ['py311']
 include = '\.pyi?$'
 exclude = '''
 /(

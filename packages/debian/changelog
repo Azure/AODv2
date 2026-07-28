@@ -1,0 +1,8 @@
+aodv2 (0.1.0-1) unstable; urgency=low
+
+  * Initial Debian packaging mirroring packages/rpm/aodv2.spec:
+    install application tree to /opt/aodv2, build venv from pyproject.toml
+    in postinst, run service from venv interpreter, read config from
+    /etc/aodv2/config.yaml.
+
+ -- Meetakshi Setiya <msetiya@microsoft.com>  Mon, 08 Jun 2026 00:00:00 +0000
