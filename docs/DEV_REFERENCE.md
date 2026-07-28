@@ -389,7 +389,84 @@ for a minimal config).
 
 ---
 
-## 10. Invariant checklist (things that break silently)
+## 10. Running AOD directly (verbose / without systemd)
+
+In production AOD runs as the `aodv2.service` systemd unit. For development you
+usually want to run the entry point by hand so you can see logs live and iterate
+without installing. The daemon is configured entirely through environment
+variables read in `main()` ([src/Controller.py](../src/Controller.py)); there
+are no CLI flags yet.
+
+The service normally logs only to syslog (`WARNING`+). Two things make a manual
+run verbose: routing logs to your terminal (`AOD_LOG_STDERR=1`), and lowering
+the log level (`AOD_LOG_LEVEL=DEBUG`).
+
+### Environment variables
+
+| Variable           | Default                     | Effect                                                         |
+| ------------------ | --------------------------- | -------------------------------------------------------------- |
+| `AOD_CONFIG`       | `src/../config/config.yaml` | Path to the YAML config file.                                  |
+| `AOD_LOG_LEVEL`    | `INFO`                      | Root log level (`DEBUG`/`INFO`/`WARNING`/…).                   |
+| `AOD_LOG_STDERR`   | `0`                         | `1` adds a stderr handler so logs appear in your terminal.     |
+| `AOD_SYSLOG_LEVEL` | `WARNING`                   | Minimum level forwarded to syslog (`/dev/log`).                |
+| `AOD_TCPDUMP_BIN`  | `tcpdump` on `PATH`         | Override the tcpdump binary (used by capture tests/dev stubs). |
+| `AOD_TRACECMD_BIN` | `trace-cmd` on `PATH`       | Override the trace-cmd binary.                                 |
+
+### Run it in the foreground
+
+Root is required (eBPF loading + privileged log sources), and `src/` must be on
+`PYTHONPATH` so the `utils`/`handlers` imports resolve the same way they do
+under systemd:
+
+```bash
+sudo AOD_LOG_LEVEL=DEBUG \
+     AOD_LOG_STDERR=1 \
+     AOD_CONFIG="$PWD/config/config.yaml" \
+     PYTHONPATH="$PWD/src" \
+     python3 src/aod_entry.py
+```
+
+Stop it with `Ctrl+C` (`SIGINT`) — the signal handler triggers a graceful
+shutdown. Send `SIGUSR1` to force a full-system snapshot bundle.
+
+### `-O` and `__debug__`: the verbosity switch
+
+The systemd unit launches the interpreter with `python3 -O`. `-O` sets
+`__debug__` to `False`, which strips out every `if __debug__:` block — and most
+of AOD's `logger.debug`/`logger.info` calls and per-handler metrics live inside
+those blocks. So:
+
+- **Verbose dev run:** use plain `python3` (no `-O`). `__debug__` is `True`, the
+  debug logging and metrics compile in, and `AOD_LOG_LEVEL=DEBUG` surfaces them.
+- **Production-like run:** add `-O` to match the service. Debug blocks are gone
+  regardless of `AOD_LOG_LEVEL`, so don't rely on them for troubleshooting a
+  packaged install.
+
+### Minimal / non-root runs
+
+You cannot run the full daemon without root (the `os.geteuid() != 0` check in
+`main()` raises immediately, and the ring buffer must be pinned). To exercise
+logic without a kernel or root, drive components directly from tests instead —
+see section 9 and the snapshot notes.
+
+### When installed as a service
+
+Override any of the variables above in `/etc/aodv2/aodv2.env` (an
+`EnvironmentFile` for the unit), then:
+
+```bash
+sudo systemctl restart aodv2
+journalctl -u aodv2 -f          # follow the daemon's syslog output
+sudo systemctl kill -s SIGUSR1 aodv2   # trigger an on-demand snapshot
+```
+
+Because the unit runs with `-O`, raising `AOD_LOG_LEVEL` to `DEBUG` there only
+adds the non-`__debug__` messages; for full verbosity reproduce the issue with a
+foreground run as above.
+
+---
+
+## 11. Invariant checklist (things that break silently)
 
 Before you open a PR, confirm the paired definitions below still agree:
 
