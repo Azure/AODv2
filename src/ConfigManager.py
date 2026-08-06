@@ -26,6 +26,7 @@ class ConfigManager:
         self.data = self._build_config(config_data, watcher, guardian)
         if __debug__:
             import pprint
+
             logger.debug("Loaded config object:\n%s", pprint.pformat(self.data))
             logger.info("Configuration loaded successfully")
 
@@ -54,7 +55,10 @@ class ConfigManager:
         for name, anomaly in config_data["guardian"]["anomalies"].items():
             track = self._get_track_for_anomaly(anomaly)
             if not track or (isinstance(track, dict) and len(track) == 0):
-                logger.error("No items to track for anomaly '%s' after applying config logic", name)
+                logger.error(
+                    "No items to track for anomaly '%s' after applying config logic",
+                    name,
+                )
                 raise ValueError(
                     f"No items to track for anomaly '{name}' after applying config logic."
                 )
@@ -106,7 +110,9 @@ class ConfigManager:
             if code not in all_codes:
                 raise ValueError(f"Code {code} not found in {code_type}.")
             if code in seen:
-                warnings.warn(f"Code {code} is duplicated in {code_type}.", UserWarning)
+                warnings.warn(
+                    f"Code {code} is duplicated in {code_type}.", UserWarning
+                )
             seen.add(code)
 
     def _validate_cmds(self, all_codes, track_codes, exclude_codes):
@@ -133,7 +139,9 @@ class ConfigManager:
             if "threshold" in command:
                 threshold = command["threshold"]
                 if not isinstance(threshold, (int, float)) or threshold < 0:
-                    raise ValueError(f"Invalid threshold value in track command: {command}")
+                    raise ValueError(
+                        f"Invalid threshold value in track command: {command}"
+                    )
 
     def _validate_smb_commands(self, track_commands, exclude_commands):
         """Validate SMB commands for tracking and exclusion.
@@ -142,7 +150,9 @@ class ConfigManager:
         checks threshold validity using a separate function.
         """
         # Extract command names from track_commands (list of dicts)
-        track_cmd_names = [cmd["command"] for cmd in (track_commands or []) if "command" in cmd]
+        track_cmd_names = [
+            cmd["command"] for cmd in (track_commands or []) if "command" in cmd
+        ]
         exclude_cmd_names = exclude_commands or []
 
         # Use validate_cmds to check for duplicates and presence
@@ -160,9 +170,15 @@ class ConfigManager:
         if mode == "trackonly":
             return {ALL_ERROR_CODES.index(code): None for code in track_codes}
         exclude_set = set(exclude_codes)
-        return {idx: None for idx, code in enumerate(ALL_ERROR_CODES) if code not in exclude_set}
+        return {
+            idx: None
+            for idx, code in enumerate(ALL_ERROR_CODES)
+            if code not in exclude_set
+        }
 
-    def _normalize_track_and_exclude(self, mode: str, track_items, exclude_items, anomaly_type: str = "anomaly"):
+    def _normalize_track_and_exclude(
+        self, mode: str, track_items, exclude_items, anomaly_type: str = "anomaly"
+    ):
         """Normalize track and exclude items based on the mode.
 
         Warns and clears the irrelevant list if needed.
@@ -179,7 +195,9 @@ class ConfigManager:
             track_items = []
         return track_items, exclude_items
 
-    def _build_latency_command_map(self, mode, track_commands, exclude_commands, default_threshold):
+    def _build_latency_command_map(
+        self, mode, track_commands, exclude_commands, default_threshold
+    ):
         """Build the command map for latency anomaly detection."""
 
         def get_threshold(cmd_dict):
@@ -241,8 +259,12 @@ class ConfigManager:
         )
 
         # Validate codes
-        all_error_codes = list(ALL_ERROR_CODES)  # Replace with your actual error code list
+        all_error_codes = list(
+            ALL_ERROR_CODES
+        )  # Replace with your actual error code list
         self._validate_cmds(all_error_codes, track_codes, exclude_codes)
 
         # Get track codes based on the mode
-        return self._get_track_codes(error_mode, ALL_ERROR_CODES, track_codes, exclude_codes)
+        return self._get_track_codes(
+            error_mode, ALL_ERROR_CODES, track_codes, exclude_codes
+        )

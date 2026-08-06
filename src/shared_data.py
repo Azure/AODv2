@@ -5,7 +5,6 @@ import errno
 from types import MappingProxyType
 import numpy as np
 
-
 SHM_NAME = "/bpf_shm"
 TASK_COMM_LEN = 16
 
@@ -16,7 +15,7 @@ PAGE_SIZE = 4096
 # Beware before changing page size, shm data size has a condition that is must be a multiple of the page size
 
 SHM_SIZE = (MAX_ENTRIES + 1) * PAGE_SIZE
-SHM_DATA_SIZE = SHM_SIZE - 2 * HEAD_TAIL_BYTES  
+SHM_DATA_SIZE = SHM_SIZE - 2 * HEAD_TAIL_BYTES
 
 MAX_WAIT = 0.005  # 5 ms, used in event dispatcher and anomaly watcher
 
