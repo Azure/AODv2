@@ -6,7 +6,7 @@ import ctypes.util
 
 def pdeathsig_preexec():
     """Set PR_SET_PDEATHSIG to SIGTERM so child dies when parent dies.
-    
+
     This function is designed to be used as the preexec_fn parameter
     in subprocess.Popen() to ensure that child processes are automatically
     terminated when the parent process dies unexpectedly.
