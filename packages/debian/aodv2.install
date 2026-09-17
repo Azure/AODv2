@@ -1,3 +1,6 @@
 src              opt/aodv2/
 config/config.yaml   etc/aodv2/
 aodv2.env        etc/aodv2/
+runtime-policy.json opt/aodv2/
+validate-external-runtime opt/aodv2/
+aodv2.service lib/systemd/system/

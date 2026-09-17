@@ -1,0 +1,65 @@
+#!/bin/sh
+set -eu
+
+fail() {
+    printf 'aodv2 external-venv: %s\n' "$1" >&2
+    exit 1
+}
+
+python=
+case "${1:-}" in
+    --python)
+        [ "$#" -eq 2 ] || fail 'usage: --python ABSOLUTE_VENV_PYTHON or --config ENV_FILE'
+        python=$2
+        ;;
+    --config)
+        [ "$#" -eq 2 ] || fail 'usage: --python ABSOLUTE_VENV_PYTHON or --config ENV_FILE'
+        [ -r "$2" ] || fail "required configuration is missing or unreadable: $2"
+        found=0
+        cr=$(printf '\r')
+        while IFS= read -r line || [ -n "$line" ]; do
+            line=${line%"$cr"}
+            case "$line" in
+                ''|\#*) ;;
+                AOD_PYTHON=*)
+                    [ "$found" -eq 0 ] || fail 'duplicate AOD_PYTHON assignment'
+                    python=${line#AOD_PYTHON=}
+                    found=1
+                    ;;
+                *) fail 'external mode accepts only comments, blank lines, and one plain AOD_PYTHON=/absolute/path assignment' ;;
+            esac
+        done < "$2"
+        [ "$found" -eq 1 ] || fail 'AOD_PYTHON is not configured'
+        ;;
+    *) fail 'usage: --python ABSOLUTE_VENV_PYTHON or --config ENV_FILE' ;;
+esac
+case "$python" in
+    /*) ;;
+    *) fail 'AOD_PYTHON must be an absolute path' ;;
+esac
+case "$python" in
+    *[!A-Za-z0-9_./+-]*) fail 'AOD_PYTHON must be a plain unquoted path without whitespace or shell expressions' ;;
+esac
+case "$python" in
+    /opt/aodv2|/opt/aodv2/*) fail 'external runtime must live outside the package-managed /opt/aodv2 directory' ;;
+esac
+[ -f "$python" ] && [ -x "$python" ] || fail "AOD_PYTHON is not an executable file: $python"
+
+output=$(
+"$python" -I - <<'AOD_EXTERNAL_PYTHON'
+import sys
+if sys.version_info[:2] < tuple(@MINIMUM_PYTHON@):
+    print("aodv2 external-venv: Python >= " + ".".join(map(str, @MINIMUM_PYTHON@))
+          + " is required; got " + sys.version.split()[0], file=sys.stderr)
+    raise SystemExit(1)
+@PYTHON_CHECK@
+status = validate_runtime(@REQUIREMENTS@, @MINIMUM_PYTHON@)
+if status == 0:
+    print("__AOD_EXTERNAL_VENV_VERIFIED__")
+raise SystemExit(status)
+AOD_EXTERNAL_PYTHON
+) || exit $?
+case "$output" in
+    *'__AOD_EXTERNAL_VENV_VERIFIED__') printf '%s\n' "$output" ;;
+    *) fail 'configured executable did not verify a Python virtual environment' ;;
+esac
