@@ -7,16 +7,17 @@ Summary:        Always-on diagnostics daemon for Linux NFS and SMB filesystems
 URL:            https://github.com/Azure/AODv2
 License:        MIT
 # Sources available at https://github.com/Azure/AODv2
-Source0:        %{name}-%{version}.tar.gz
+Source0:        aodv2-%{version}.tar.gz
 
 %global _aod_root /opt/aodv2
 %global _aod_etc  /etc/aodv2
 
 ExclusiveArch:  x86_64
-BuildRequires:  systemd-rpm-macros, make, clang, bpftool, libbpf-devel
-Requires:       (python3 >= 3.11 or python3.11)
+BuildRequires:  systemd-rpm-macros
+Requires:       (python3 >= 3.11 or /usr/bin/python3.11)
 Requires:       systemd
-Requires:       python3-numpy, python3-pyyaml, python3-zstandard
+Conflicts:      aodv2-external-venv
+Recommends:     python3-numpy, python3-pyyaml, python3-zstandard
 Recommends:     trace-cmd
 Recommends:     tcpdump
 
@@ -31,7 +32,7 @@ at a user-managed virtual environment instead. Configuration lives in
 `aod_output_dir` key in that file and is created by the daemon on first use.
 
 %prep
-%setup -q
+%setup -q -n aodv2-%{version}
 %build
 
 %install
@@ -40,6 +41,8 @@ rm -rf %{buildroot}
 # Application tree under /opt/aodv2
 install -d -m 0755 %{buildroot}%{_aod_root}
 cp -a src %{buildroot}%{_aod_root}/src
+install -m 0644 runtime-policy.json %{buildroot}%{_aod_root}/runtime-policy.json
+install -m 0755 validate-external-runtime %{buildroot}%{_aod_root}/validate-external-runtime
 
 # Configuration
 install -D -m 0644 config/config.yaml %{buildroot}%{_aod_etc}/config.yaml
@@ -48,6 +51,8 @@ install -D -m 0644 aodv2.env       %{buildroot}%{_aod_etc}/aodv2.env
 # systemd unit
 install -D -m 0644 aodv2.service \
     %{buildroot}%{_unitdir}/aodv2.service
+
+# @AOD_RUNTIME_PRETRANS@
 
 %post
 %systemd_post aodv2.service
@@ -65,6 +70,8 @@ fi
 %files
 %dir %{_aod_root}
 %{_aod_root}/src
+%{_aod_root}/runtime-policy.json
+%{_aod_root}/validate-external-runtime
 %dir %{_aod_etc}
 %config(noreplace) %{_aod_etc}/config.yaml
 %config(noreplace) %{_aod_etc}/aodv2.env

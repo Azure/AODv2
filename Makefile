@@ -2,7 +2,7 @@
 
 SHELL := /bin/bash
 
-.PHONY: build install-bins rpm deb prep rpm_prep deb_prep clean cleanbins deps
+.PHONY: build install-bins rpm deb prep rpm_prep deb_prep clean cleanbins deps validate-external-runtime
 default: build install-bins rpm deb
 
 RPMBUILD := $(CURDIR)/rpmbuild
@@ -13,6 +13,12 @@ LOCALDEBS:=./debs
 SRCDIR:=./
 PKGNAME:=aodv2
 VERSION:=0.1.0
+PYTHON ?= python3
+AOD_RUNTIME_MODE ?= system
+ifeq ($(filter $(AOD_RUNTIME_MODE),system external-venv),)
+$(error AOD_RUNTIME_MODE must be system or external-venv)
+endif
+AOD_PACKAGE_NAME := $(if $(filter external-venv,$(AOD_RUNTIME_MODE)),aodv2-external-venv,aodv2)
 
 build:
 	$(MAKE) -C monitoring_tools
@@ -22,7 +28,13 @@ install-bins: build
 	cp monitoring_tools/src/bin/* src/bin/
 
 deps:
-	python3 tools/gen_deps.py
+	$(PYTHON) tools/gen_deps.py
+
+validate-external-runtime:
+	mkdir -p ${TMPLOCAL}/runtime-check
+	cp aodv2.service ${TMPLOCAL}/runtime-check/
+	$(PYTHON) packages/prepare_runtime.py --mode external-venv --format stage --stage ${TMPLOCAL}/runtime-check
+	${TMPLOCAL}/runtime-check/validate-external-runtime --python "$(AOD_PYTHON)"
 
 prep:
 	@ mkdir -p ${TMPLOCAL} ${TMPLOCAL}/$(PKGNAME)-$(VERSION)
@@ -35,7 +47,9 @@ deb_prep_dirs:
 
 ${TMPLOCAL}/$(PKGNAME)-$(VERSION).tar.gz: prep install-bins deps ${SRCDIR}/src/Controller.py \
 	${SRCDIR}/config/config.yaml ${SRCDIR}/aodv2.service ${SRCDIR}/aodv2.env \
-	${SRCDIR}/packages/rpm/aodv2.spec
+	${SRCDIR}/packages/rpm/aodv2.spec ${SRCDIR}/pyproject.toml \
+	${SRCDIR}/packages/prepare_runtime.py ${SRCDIR}/packages/runtime_check.py \
+	${SRCDIR}/packages/validate_external_runtime.sh.in
 	rm -rf ${TMPLOCAL}/$(PKGNAME)-$(VERSION)
 	mkdir -p ${TMPLOCAL}/$(PKGNAME)-$(VERSION)
 	cp -r ${SRCDIR}/src ${TMPLOCAL}/$(PKGNAME)-$(VERSION)/src
@@ -43,26 +57,28 @@ ${TMPLOCAL}/$(PKGNAME)-$(VERSION).tar.gz: prep install-bins deps ${SRCDIR}/src/C
 	cp ${SRCDIR}/aodv2.service ${TMPLOCAL}/$(PKGNAME)-$(VERSION)
 	cp ${SRCDIR}/aodv2.env     ${TMPLOCAL}/$(PKGNAME)-$(VERSION)
 	find ${TMPLOCAL}/$(PKGNAME)-$(VERSION) -type d -name "__pycache__" -prune -exec rm -rf {} +
+	$(PYTHON) packages/prepare_runtime.py --mode $(AOD_RUNTIME_MODE) --format stage --stage ${TMPLOCAL}/$(PKGNAME)-$(VERSION)
 	( cd ${TMPLOCAL}; tar -czf $(PKGNAME)-$(VERSION).tar.gz $(PKGNAME)-$(VERSION) )
 
 rpm_prep: ${TMPLOCAL}/$(PKGNAME)-$(VERSION).tar.gz rpm_prep_dirs
 	cp ${TMPLOCAL}/$(PKGNAME)-$(VERSION).tar.gz ${RPMBUILD}/SOURCES/
-	cp ${SRCDIR}/packages/rpm/aodv2.spec ${RPMBUILD}/SPECS/
+	$(PYTHON) packages/prepare_runtime.py --mode $(AOD_RUNTIME_MODE) --format rpm \
+		--stage ${TMPLOCAL}/$(PKGNAME)-$(VERSION) --rpm-spec ${RPMBUILD}/SPECS/aodv2.spec
 	
 rpm: rpm_prep
 	rpmbuild -ba ${RPMBUILD}/SPECS/aodv2.spec --define "_topdir ${RPMBUILD}"
-	mv ${RPMBUILD}/RPMS/x86_64/*.rpm ${LOCALRPMS}/
+	mv ${RPMBUILD}/RPMS/x86_64/$(AOD_PACKAGE_NAME)-$(VERSION)-*.rpm ${LOCALRPMS}/
 	sha256sum ${LOCALRPMS}/*.rpm > ${LOCALRPMS}/sha256sums.txt
 
 deb_prep: ${TMPLOCAL}/$(PKGNAME)-$(VERSION).tar.gz deb_prep_dirs
 	rm -rf ${DEBBUILD}/$(PKGNAME)-$(VERSION)
 	tar -xzf ${TMPLOCAL}/$(PKGNAME)-$(VERSION).tar.gz -C ${DEBBUILD}
 	cp -a ${SRCDIR}/packages/debian ${DEBBUILD}/$(PKGNAME)-$(VERSION)/debian
-	cp ${SRCDIR}/aodv2.service ${DEBBUILD}/$(PKGNAME)-$(VERSION)/debian/aodv2.service
+	$(PYTHON) packages/prepare_runtime.py --mode $(AOD_RUNTIME_MODE) --format deb --stage ${DEBBUILD}/$(PKGNAME)-$(VERSION)
 
 deb: deb_prep
 	cd ${DEBBUILD}/$(PKGNAME)-$(VERSION) && dpkg-buildpackage -us -uc -b
-	mv ${DEBBUILD}/$(PKGNAME)_$(VERSION)*.deb ${LOCALDEBS}/
+	mv ${DEBBUILD}/$(AOD_PACKAGE_NAME)_$(VERSION)*.deb ${LOCALDEBS}/
 	mv ${DEBBUILD}/$(PKGNAME)_$(VERSION)*.buildinfo ${LOCALDEBS}/ 2>/dev/null || true
 	mv ${DEBBUILD}/$(PKGNAME)_$(VERSION)*.changes  ${LOCALDEBS}/ 2>/dev/null || true
 	sha256sum ${LOCALDEBS}/*.deb > ${LOCALDEBS}/sha256sums.txt

@@ -12,7 +12,10 @@ Homepage: https://github.com/Azure/AODv2
 
 Package: aodv2
 Architecture: amd64
+Conflicts: aodv2-external-venv
+XB-AOD-Runtime-Mode: system
 Depends: ${misc:Depends},
+         ${shlibs:Depends},
          python3 (>= 3.11),
          python3-numpy,
          python3-yaml,
