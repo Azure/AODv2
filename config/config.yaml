@@ -48,10 +48,48 @@ guardian:
 cleanup:
   cleanup_interval_sec: 60     # Interval in seconds to run cleanup
   max_log_age_days: 2          # Maximum age of logs in days
-  max_total_log_size_mb: 0.5   # Maximum total size of all logs in MB
+  max_total_log_size_mb: 200   # Maximum total size of all logs in MB
 
 audit:
   enabled: true
+
+# Auto-upload of diagnostic packages to a customer-owned storage account.
+# Disabled by default; see docs/UPLOAD_DESIGN.md.
+upload:
+  enabled: false
+  protocol: blob                    # 'local' also exists, for testing only
+
+  destination:
+    account: null                   # e.g. "mydiagacct"
+    container: null                 # e.g. "aod-diagnostics"
+    endpoint_suffix: core.windows.net
+    prefix: aodv2/v1
+
+  identity:
+    kind: managed                   # managed | arc
+    client_id: null                 # required only for a user-assigned identity
+
+  limits:
+    multipart_threshold_mb: 64      # above this, upload in blocks (not a cap)
+    block_size_mb: 4
+    upload_spool_max_mb: 100        # of max_total_log_size_mb, reserved for un-uploaded packages
+    max_upload_bandwidth_kbps: 0    # 0 = unlimited
+    upload_timeout_sec: 300
+    backfill_max_age_hours: 0       # 0 = on first enable, upload everything still on disk
+
+  retry:
+    max_attempts: 8
+    base_backoff_sec: 30
+    max_backoff_sec: 3600
+    circuit_probe_interval_sec: 900
+
+  scan:
+    scan_interval_sec: 300
+
+  behavior:
+    delete_after_upload: false
+    require_https: true
+    preflight_write_check: true
 
 # ** Use either track_commands (trackonly) or exclude_commands (excludeonly).
 # Mode type will determine which one is used.

@@ -7,6 +7,8 @@ from pathlib import Path
 import os
 from abc import ABC, abstractmethod
 
+from utils.collector_result import CollectorResult, STATUS_FAILED, STATUS_OK
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,6 +25,15 @@ class QuickAction(ABC):
             self.total_execution_time = 0
             self.failures = 0
 
+    @property
+    def name(self) -> str:
+        """Short collector name used in the manifest, e.g. DmesgQuickAction -> dmesg."""
+        cls_name = self.__class__.__name__
+        suffix = "QuickAction"
+        if cls_name.endswith(suffix):
+            cls_name = cls_name[: -len(suffix)]
+        return cls_name.lower()
+
     def get_output_path(self, batch_id: str) -> str:
         """Return the output path for the quick action."""
         return os.path.join(self.batches_root, f"aod_quick_{batch_id}", self.log_filename)
@@ -36,31 +47,45 @@ class QuickAction(ABC):
         """Return the command to run as a list.
         FOR CAT CMDS, RETURN A LIST OF SIZE 2: ["cat", "/path/to/file"]"""
 
-    async def execute(self, batch_id: str) -> None:
-        """Run process to collect logs."""
+    async def execute(self, batch_id: str) -> CollectorResult:
+        """Run process to collect logs.
+
+        Never raises: a failing collector must not abort the rest of the
+        package. The outcome is returned so the manifest can record it.
+        """
         if __debug__:
             start_time = time.time()
-        
+
+        output_path = self.get_output_path(batch_id)
         try:
-            output_path = self.get_output_path(batch_id)
             cmd, cmd_type = self.get_command()
-            
+
             if cmd_type == "cat":
                 # Expecting: ["cat", "/path/to/file"]
                 _, in_path = cmd
                 await self.collect_cat_output(in_path, output_path)
             elif cmd_type == "cmd":
                 await self.collect_cmd_output(cmd, output_path)
-                
+
             if __debug__:
                 self.executions += 1
+            return CollectorResult(
+                name=self.name,
+                status=STATUS_OK,
+                bytes=self._written_bytes(output_path),
+            )
         except Exception as e:
             # Fail gracefully - log error but don't raise to avoid performance impact
             if __debug__:
                 self.failures += 1
-            logger.warning("QuickAction %s failed for batch %s: %s", 
+            logger.warning("QuickAction %s failed for batch %s: %s",
                          self.__class__.__name__, batch_id, e)
-            # Don't raise - continue processing other actions
+            return CollectorResult(
+                name=self.name,
+                status=STATUS_FAILED,
+                bytes=self._written_bytes(output_path),
+                error=f"{type(e).__name__}: {e}",
+            )
         finally:
             if __debug__:
                 self.total_execution_time += time.time() - start_time
@@ -69,6 +94,14 @@ class QuickAction(ABC):
                     success_rate = (self.executions / (self.executions + self.failures) * 100) if (self.executions + self.failures) > 0 else 0
                     logger.debug("%s metrics: success=%d, failures=%d, success_rate=%.1f%%, avg_time=%.2fs", 
                                self.__class__.__name__, self.executions, self.failures, success_rate, avg_time)
+
+    @staticmethod
+    def _written_bytes(output_path: str) -> int:
+        """Collectors that produce no output never create the file."""
+        try:
+            return os.path.getsize(output_path)
+        except OSError:
+            return 0
 
     async def collect_cat_output(self, in_path: str, out_path: str) -> None:
         in_path = Path(in_path)

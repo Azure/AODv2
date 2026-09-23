@@ -8,6 +8,7 @@ import threading
 import queue
 import subprocess
 import os
+import argparse
 import signal
 from functools import partial
 import time
@@ -23,6 +24,11 @@ from EventDispatcher import EventDispatcher
 from AnomalyWatcher import AnomalyWatcher
 from LogCollector import LogCollector
 from SpaceWatcher import SpaceWatcher
+from Uploader import Uploader
+from UploadStateStore import UploadStateStore
+from transports.LocalTransport import LocalTransport
+from utils import paths
+from utils.host_id import get_host_id
 from utils.pdeathsig_wrapper import pdeathsig_preexec
 
 logger = logging.getLogger(__name__)
@@ -58,11 +64,28 @@ class Controller:
             self.process_restarts = 0
         self.eventQueue = queue.Queue()
         self.anomalyActionQueue = queue.Queue()
+        self.uploadQueue = queue.Queue(maxsize=1024)
         self.tool_processes = {}
         self.tool_cmd_builders = {
             "smbslower": self._get_smbsloweraod_cmd,
             # "smbiosnoop": self._get_smbiosnoop_cmd,
         }
+
+        self.host_id = get_host_id(paths.output_dir(self.config))
+        # Nothing is created on disk unless upload is actually enabled.
+        self.upload_store = None
+        self.upload_transport = None
+        if self.config.upload.enabled:
+            try:
+                self.upload_transport = self._build_upload_transport()
+                self.upload_store = UploadStateStore(paths.upload_dir(self.config) / "state.db")
+            except Exception as e:
+                # Collection is the product; a broken upload path must never
+                # prevent the daemon from monitoring.
+                self.upload_transport = None
+                self.upload_store = None
+                logger.error("Upload disabled: %s", e)
+                syslog.syslog(syslog.LOG_ERR, f"AOD upload disabled at startup: {e}")
 
         # Initialize all components
         if __debug__:
@@ -71,8 +94,24 @@ class Controller:
         self.anomaly_watcher = AnomalyWatcher(self)
         self.log_collector_manager = LogCollector(self)
         self.space_watcher = SpaceWatcher(self)
+        self.uploader = Uploader(self)
         if __debug__:
             logger.info("Controller initialization complete")
+
+    def _build_upload_transport(self):
+        """`local` writes to disk and exists for testing; `blob` is the real path."""
+        upload_cfg = self.config.upload
+        if upload_cfg.protocol == "local":
+            return LocalTransport(paths.upload_dir(self.config) / "local-blobs")
+
+        from transports.BlobTransport import BlobTransport
+        return BlobTransport(
+            destination=upload_cfg.destination,
+            identity=upload_cfg.identity,
+            limits=upload_cfg.limits,
+            timeout_sec=upload_cfg.limits.upload_timeout_sec,
+            preflight_write_check=upload_cfg.behavior.preflight_write_check,
+        )
 
     def _supervise_thread(self, thread_name: str, target: callable, *args, **kwargs) -> None:
         """Start and supervise a thread, restarting it if it dies
@@ -146,7 +185,12 @@ class Controller:
             smbcmds = [str(cmd_id) for cmd_id, threshold in latency_anomaly.track.items()]
             track_cmds = ",".join(smbcmds)
         
-        ebpf_binary_path = os.path.join(os.path.dirname(__file__), "bin", "smbsloweraod")
+        ebpf_binary_path = paths.find_tool("smbsloweraod")
+        if ebpf_binary_path is None:
+            # Without it, latency detection would silently never start.
+            raise FileNotFoundError(
+                "smbsloweraod helper not found; set AOD_TOOL_DIR or install the package"
+            )
         return [ebpf_binary_path, "-m", str(min_threshold), "-c", track_cmds]
 
     def stop(self) -> None:
@@ -159,6 +203,10 @@ class Controller:
         # Wait for all queues to be processed
         self.eventQueue.join()
         self.anomalyActionQueue.join()
+        # uploadQueue is deliberately not joined: a slow transfer would block
+        # shutdown past systemd's stop timeout and be SIGKILLed mid-upload.
+        # Interrupted rows return to PENDING on the next start instead.
+        self.uploadQueue.put(None)
 
         for thread in self.threads:
             thread.join(timeout=5)
@@ -168,8 +216,8 @@ class Controller:
 
         if hasattr(self, "event_dispatcher"):
             self.event_dispatcher.cleanup()
-        # if hasattr(self, "space_watcher"):
-        #     self.space_watcher.cleanup_by_size()
+        if hasattr(self, "upload_store") and self.upload_store is not None:
+            self.upload_store.close()
 
     def _extract_tools(self) -> set[str]:
         """Extract the set of ebpf tools to run from the config."""
@@ -204,6 +252,7 @@ class Controller:
         self._supervise_thread("AnomalyWatcher", self.anomaly_watcher.run)
         self._supervise_thread("LogCollector", self.log_collector_manager.run)
         self._supervise_thread("SpaceWatcher", self.space_watcher.run)
+        self._supervise_thread("Uploader", self.uploader.run)
         self.stop_event.wait()
         self._shutdown()
 
@@ -222,14 +271,23 @@ def main():
     if os.geteuid() != 0:
         raise RuntimeError("Controller daemon must be run as root.")
 
-    # add arguments later
+    parser = argparse.ArgumentParser(prog="linux_diagnostics_controller")
+    parser.add_argument("--config", help="path to config.yaml")
+    args = parser.parse_args()
 
-    # Use the config path relative to this file, as in controller_draft.py
-    config_path = os.path.join(os.path.dirname(__file__), "../config/config.yaml")
+    config_path = args.config or _default_config_path()
     controller = Controller(config_path)
     signal.signal(signal.SIGTERM, partial(handle_signal, controller))
     signal.signal(signal.SIGINT, partial(handle_signal, controller))
     controller.run()
+
+
+def _default_config_path() -> str:
+    """Packaged location first; the repo copy is the development fallback."""
+    packaged = "/etc/linux_diagnostics/config.yaml"
+    if os.path.exists(packaged):
+        return packaged
+    return os.path.join(os.path.dirname(__file__), "../config/config.yaml")
 
 
 if __name__ == "__main__":
