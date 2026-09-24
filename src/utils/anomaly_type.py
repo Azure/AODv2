@@ -1,5 +1,5 @@
 from enum import Enum
-from utils.shared_data import ALL_SMB_CMDS, ALL_NFS_CMDS, ALL_NFS_ERRS
+from utils.shared_data import ALL_SMB_CMDS, ALL_SMB_ERRS, ALL_NFS_CMDS, ALL_NFS_ERRS
 
 
 class Protocol(Enum):
@@ -28,6 +28,7 @@ class AnomalyType(Enum):
 # Maps eBPF tool name to the tool ID byte it writes into events
 TOOL_NAME_TO_ID = {
     "smbslower": 0,
+    "smbiosnoop": 1,
     "nfsslower": 10,
     "nfsiosnoop": 11,
     # Add more as needed
@@ -74,6 +75,12 @@ PROTOCOL_SPEC = {
     Protocol.SMB: {
         AnomalyType.LATENCY: {
             "smbslower": {"track_commands": ALL_SMB_CMDS},
+        },
+        AnomalyType.ERROR: {
+            "smbiosnoop": {
+                "track_commands": ALL_SMB_CMDS,
+                "track_errors": ALL_SMB_ERRS,
+            },
         },
         AnomalyType.SOCKCONN: {
             "ss": {},

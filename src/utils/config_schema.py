@@ -24,7 +24,8 @@ class AnomalyConfig:
     # Per-axis tracking. Shape varies by anomaly type - ref PROTOCOL_SPEC:
     #   LATENCY  -> {"track_commands": dict[int, int]}    cmd_id -> threshold_ms
     #   ERROR    -> {"track_commands": frozenset[int],
-    #                "track_errors":   frozenset[int]}    allowlists
+    #                "track_errors":   frozenset[int],
+    #                "rules": tuple[dict, ...]}            filters/thresholds
     #   SOCKCONN -> {}                                    no per-item knobs
     track: dict = field(default_factory=dict)
     quick_actions: list[str] = field(default_factory=list)

@@ -9,7 +9,7 @@ from Controller import Controller, handle_signal, handle_snapshot_signal
 from utils.anomaly_type import AnomalyType, Protocol
 from utils.config_schema import AnomalyKey
 from utils.pdeathsig_wrapper import pdeathsig_preexec
-from utils.shared_data import ALL_NFS_CMDS, ALL_NFS_ERRS, ALL_SMB_CMDS
+from utils.shared_data import ALL_NFS_CMDS, ALL_NFS_ERRS, ALL_SMB_CMDS, ALL_SMB_ERRS
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "../config/config.yaml")
 SRC_BIN_DIR = os.path.join(os.path.dirname(controller_mod.__file__), "bin")
@@ -131,11 +131,10 @@ class TestExtractTools(unittest.TestCase):
 
     def test_returns_unique_tool_set_from_production_config(self):
         controller = _make_controller()
-        # Mirrors config/config.yaml: smb.latency + smb.sockconn,
-        # nfs.latency + nfs.sockconn + nfs.error.
+        # Mirrors all eBPF and userspace detectors in config/config.yaml.
         self.assertEqual(
             controller._extract_tools(),
-            {"smbslower", "ss", "nfsslower", "nfsiosnoop"},
+            {"smbslower", "smbiosnoop", "ss", "nfsslower", "nfsiosnoop"},
         )
 
 
@@ -149,21 +148,20 @@ class TestLatencyToolCmd(unittest.TestCase):
     def test_smbslower_cmd_uses_min_threshold_and_all_smb_cmd_ids(self):
         cmd = self.controller._get_latency_tool_cmd("smbslower")
 
-        # Production config: default 20 ms, SMB2_WRITE overridden to 50 ms
-        # in 'all' mode -> all SMB cmd ids tracked, min threshold is 20.
+        # Production config excludes only long-lived CHANGE_NOTIFY requests.
         self.assertEqual(cmd[0], os.path.join(SRC_BIN_DIR, "smbslower"))
-        self.assertEqual(cmd[1:4], ["-m", "20", "-c"])
+        self.assertEqual(cmd[1:4], ["-m", "500", "-c"])
 
         ids = [int(x) for x in cmd[4].split(",")]
-        self.assertEqual(set(ids), set(ALL_SMB_CMDS.values()))
+        excluded = {ALL_SMB_CMDS["SMB2_CHANGE_NOTIFY"]}
+        self.assertEqual(set(ids), set(ALL_SMB_CMDS.values()) - excluded)
 
     def test_nfsslower_cmd_uses_default_threshold(self):
         cmd = self.controller._get_latency_tool_cmd("nfsslower")
 
-        # Production config: default 50 ms, no per-command overrides ->
-        # every NFS cmd tracked at 50 ms, so min threshold is 50.
+        # Production config tracks every NFS command at 500 ms.
         self.assertEqual(cmd[0], os.path.join(SRC_BIN_DIR, "nfsslower"))
-        self.assertEqual(cmd[1:4], ["-m", "50", "-c"])
+        self.assertEqual(cmd[1:4], ["-m", "500", "-c"])
 
         ids = [int(x) for x in cmd[4].split(",")]
         self.assertEqual(set(ids), set(ALL_NFS_CMDS.values()))
@@ -181,22 +179,28 @@ class TestErrorToolCmd(unittest.TestCase):
     def test_nfsiosnoop_cmd_omits_empty_track_commands(self):
         cmd = self.controller._get_error_tool_cmd("nfsiosnoop")
 
-        # Production config: track_commands is empty, track_errors lists
-        # NFS4ERR_OLD_STATEID (10024) and NFS4ERR_BAD_STATEID (10025).
+        # Rules include global severe/retry statuses, so commands are
+        # unrestricted and the tracer receives the union of rule errors.
         self.assertEqual(cmd[0], os.path.join(SRC_BIN_DIR, "nfsiosnoop"))
         self.assertNotIn("-c", cmd)
         self.assertIn("-e", cmd)
 
         err_csv = cmd[cmd.index("-e") + 1]
         err_ids = [int(x) for x in err_csv.split(",")]
-        self.assertEqual(
-            set(err_ids),
-            {
-                ALL_NFS_ERRS["NFS4ERR_OLD_STATEID"],
-                ALL_NFS_ERRS["NFS4ERR_BAD_STATEID"],
-            },
-        )
+        self.assertIn(ALL_NFS_ERRS["NFS4ERR_BAD_STATEID"], err_ids)
+        self.assertIn(ALL_NFS_ERRS["NFS4ERR_OLD_STATEID"], err_ids)
+        self.assertIn(ALL_NFS_ERRS["NFS4ERR_NOENT"], err_ids)
+        self.assertNotIn(ALL_NFS_ERRS["NFS4ERR_NOTDIR"], err_ids)
         # Sorted form, since the CLI builder sorts for stable output.
+        self.assertEqual(err_ids, sorted(err_ids))
+
+    def test_smbiosnoop_cmd_uses_union_of_rule_statuses(self):
+        cmd = self.controller._get_error_tool_cmd("smbiosnoop")
+
+        self.assertEqual(cmd[0], os.path.join(SRC_BIN_DIR, "smbiosnoop"))
+        self.assertNotIn("-c", cmd)
+        err_ids = [int(x) for x in cmd[cmd.index("-e") + 1].split(",")]
+        self.assertEqual(set(err_ids), set(ALL_SMB_ERRS.values()))
         self.assertEqual(err_ids, sorted(err_ids))
 
 
@@ -226,12 +230,13 @@ class TestRunStartsComponents(unittest.TestCase):
 
         names = sorted(c.kwargs["name"] for c in mock_thread_cls.call_args_list)
         # 'ss' is userspace and is driven by AnomalyWatcher, not the
-        # process supervisor. The three eBPF tools each get one.
+        # process supervisor. Each configured eBPF tool gets one.
         self.assertEqual(
             names,
             sorted(
                 [
                     "smbslower_Supervisor",
+                    "smbiosnoop_Supervisor",
                     "nfsslower_Supervisor",
                     "nfsiosnoop_Supervisor",
                 ]
@@ -257,6 +262,10 @@ class TestRunStartsComponents(unittest.TestCase):
         self.assertEqual(
             builders_by_tool["smbslower"](),
             self.controller._get_latency_tool_cmd("smbslower"),
+        )
+        self.assertEqual(
+            builders_by_tool["smbiosnoop"](),
+            self.controller._get_error_tool_cmd("smbiosnoop"),
         )
         self.assertEqual(
             builders_by_tool["nfsslower"](),

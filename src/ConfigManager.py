@@ -354,14 +354,99 @@ class ConfigManager:
 
     def _get_error_track_cmds(
         self, anomaly, axes: dict, key: AnomalyKey
-    ) -> dict[str, frozenset[int]]:
-        """Parse error anomaly commands and errors (axes) from the config. Returns a per-axis frozenset of IDs.
+    ) -> dict:
+        """Parse error filters and optional command/error threshold rules.
 
-        Axes accepted are those declared in PROTOCOL_SPEC for this tool
-        (nfsiosnoop -> track_commands + track_errors). An empty axis
-        means "no allowlist filter" in the BPF program. At least one axis
-        must be non-empty.
+        ``rules`` are evaluated in userspace. Their axis unions are sent to the
+        single BPF tracer to reduce traffic without losing events needed by any
+        rule. If any rule omits an axis, that BPF axis remains unfiltered.
+
+        The flat track_commands/track_errors form remains supported for
+        existing configurations.
         """
+        raw_rules = anomaly.get("rules")
+        if raw_rules is not None:
+            if anomaly.get("track_commands") or anomaly.get("track_errors"):
+                raise ValueError(
+                    f"Error anomaly '{key}' cannot combine 'rules' with "
+                    "top-level track_commands or track_errors."
+                )
+            if not isinstance(raw_rules, list) or not raw_rules:
+                raise ValueError(
+                    f"'rules' for {key} must be a non-empty list."
+                )
+
+            rules = []
+            names = set()
+            for index, raw_rule in enumerate(raw_rules):
+                if not isinstance(raw_rule, dict):
+                    raise ValueError(
+                        f"Rule {index} for {key} must be a mapping."
+                    )
+                name = raw_rule.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError(
+                        f"Rule {index} for {key} must have a non-empty name."
+                    )
+                if name in names:
+                    raise ValueError(f"Rule name '{name}' is duplicated for {key}.")
+                names.add(name)
+
+                acceptable_count = raw_rule.get("acceptable_count", 1)
+                if (
+                    not isinstance(acceptable_count, int)
+                    or isinstance(acceptable_count, bool)
+                    or acceptable_count < 1
+                ):
+                    raise ValueError(
+                        f"acceptable_count for rule '{name}' in {key} must be "
+                        "an integer >= 1."
+                    )
+
+                commands = self._parse_axis_for_anomaly(
+                    raw_rule.get("track_commands"),
+                    axes["track_commands"],
+                    "track_commands",
+                    key,
+                )
+                errors = self._parse_axis_for_anomaly(
+                    raw_rule.get("track_errors"),
+                    axes["track_errors"],
+                    "track_errors",
+                    key,
+                )
+                if not commands and not errors:
+                    raise ValueError(
+                        f"Rule '{name}' for {key} must specify at least one "
+                        "command or error."
+                    )
+                rules.append(
+                    {
+                        "name": name,
+                        "acceptable_count": acceptable_count,
+                        "track_commands": commands,
+                        "track_errors": errors,
+                    }
+                )
+
+            command_filter = (
+                frozenset()
+                if any(not rule["track_commands"] for rule in rules)
+                else frozenset().union(
+                    *(rule["track_commands"] for rule in rules)
+                )
+            )
+            error_filter = (
+                frozenset()
+                if any(not rule["track_errors"] for rule in rules)
+                else frozenset().union(*(rule["track_errors"] for rule in rules))
+            )
+            return {
+                "track_commands": command_filter,
+                "track_errors": error_filter,
+                "rules": tuple(rules),
+            }
+
         track: dict[str, frozenset[int]] = {}
         for axis_name, lookup in axes.items():
             track[axis_name] = self._parse_axis_for_anomaly(

@@ -37,7 +37,13 @@ from utils.anomaly_type import (
     TOOL_NAME_TO_ID,
 )
 from utils.config_schema import AnomalyConfig, AnomalyKey
-from utils.shared_data import ALL_NFS_CMDS, ALL_NFS_ERRS, ALL_SMB_CMDS, event_dtype
+from utils.shared_data import (
+    ALL_NFS_CMDS,
+    ALL_NFS_ERRS,
+    ALL_SMB_CMDS,
+    ALL_SMB_ERRS,
+    event_dtype,
+)
 
 from conftest import make_fake_controller
 
@@ -106,6 +112,19 @@ def _nfs_error_config(*, acceptable_count: int = 2) -> AnomalyConfig:
         track={
             "track_commands": frozenset(ALL_NFS_CMDS.values()),
             "track_errors": frozenset(ALL_NFS_ERRS.values()),
+        },
+    )
+
+
+def _smb_error_config(*, acceptable_count: int = 2) -> AnomalyConfig:
+    return _make_anomaly_config(
+        protocol=Protocol.SMB,
+        anomaly_type=AnomalyType.ERROR,
+        tool="smbiosnoop",
+        acceptable_count=acceptable_count,
+        track={
+            "track_commands": frozenset(ALL_SMB_CMDS.values()),
+            "track_errors": frozenset(ALL_SMB_ERRS.values()),
         },
     )
 
@@ -405,6 +424,18 @@ class RunLoopTests(unittest.TestCase):
         ctrl.eventQueue.put(batch)
         ctrl.eventQueue.put(None)
         w.run()
+        action = ctrl.anomalyActionQueue.get_nowait()
+        self.assertEqual(action["anomaly_key"], cfg.key)
+
+    def test_smb_error_events_route_to_smbiosnoop_handler(self):
+        cfg = _smb_error_config(acceptable_count=2)
+        ctrl = _make_controller(anomalies={cfg.key: cfg}, watch_interval_sec=5)
+        watcher = AnomalyWatcher(ctrl)
+        ctrl.eventQueue.put(_make_event_batch("smbiosnoop", commands=[5, 8]))
+        ctrl.eventQueue.put(None)
+
+        watcher.run()
+
         action = ctrl.anomalyActionQueue.get_nowait()
         self.assertEqual(action["anomaly_key"], cfg.key)
 

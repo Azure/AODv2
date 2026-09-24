@@ -5,12 +5,13 @@ anomalies:
   smb:
     latency:
       tool: "smbslower"
-      mode: "all"              # Options: all, trackonly, excludeonly
-      acceptable_count: 10     # number of commands with latency above threshold in X seconds
-      default_threshold_ms: 20 # milliseconds, by default applies to all commands
-      track_commands:
-        - command: SMB2_WRITE
-          threshold: 50
+      mode: "all"
+      acceptable_count: 10
+      default_threshold_ms: 500
+      # CHANGE_NOTIFY waits for a directory change, so its duration does not
+      # represent storage latency (fs/smb/client/smb2pdu.c: SMB2_change_notify).
+      exclude_commands:
+        - SMB2_CHANGE_NOTIFY
       actions:
         dmesg:
         journalctl:
@@ -19,21 +20,98 @@ anomalies:
         mounts:
         smbinfo:
         syslogs:
-        tcpdump: ["-s", "65536", "-B", "10240", "-C", "2", "-W", "100"]
+        # tcpdump: ["-s", "65536", "-B", "10240", "-C", "2", "-W", "100"]
+    error:
+      tool: "smbiosnoop"
+      rules:
+        # High-signal failures are anomalous at a low rate for every command.
+        - name: severe
+          acceptable_count: 3
+          track_errors:
+            - STATUS_ACCESS_DENIED
+            - STATUS_DATA_ERROR
+            - STATUS_QUOTA_EXCEEDED
+            - STATUS_DISK_FULL
+            - STATUS_INSUFFICIENT_RESOURCES
+            - STATUS_DEVICE_DATA_ERROR
+            - STATUS_IO_TIMEOUT
+            - STATUS_UNEXPECTED_NETWORK_ERROR
+            - STATUS_NETWORK_NAME_DELETED
+            - STATUS_BAD_NETWORK_NAME
+            - STATUS_FILE_CORRUPT_ERROR
+            - STATUS_TOO_MANY_OPENED_FILES
+            - STATUS_USER_SESSION_DELETED
+            - STATUS_CONNECTION_DISCONNECTED
+            - STATUS_CONNECTION_RESET
+            - STATUS_NETWORK_UNREACHABLE
+            - STATUS_HOST_UNREACHABLE
+            - STATUS_NETWORK_SESSION_EXPIRED
+        # Missing paths are normal for CREATE/open probes, but a high rate in
+        # one watch window often indicates a bad path or retry loop. The Linux
+        # client maps these statuses to -ENOENT in smb2_mapping_table.c.
+        - name: missing-path-burst
+          acceptable_count: 100
+          track_commands:
+            - SMB2_CREATE
+          track_errors:
+            - STATUS_NO_SUCH_FILE
+            - STATUS_OBJECT_NAME_NOT_FOUND
+            - STATUS_OBJECT_PATH_NOT_FOUND
+        - name: create-collision-burst
+          acceptable_count: 100
+          track_commands:
+            - SMB2_CREATE
+          track_errors:
+            - STATUS_OBJECT_NAME_COLLISION
+        - name: directory-enumeration-burst
+          acceptable_count: 500
+          track_commands:
+            - SMB2_QUERY_DIRECTORY
+          track_errors:
+            - STATUS_NO_MORE_FILES
+        - name: response-buffer-pressure
+          acceptable_count: 100
+          track_commands:
+            - SMB2_IOCTL
+            - SMB2_QUERY_DIRECTORY
+            - SMB2_QUERY_INFO
+          track_errors:
+            - STATUS_BUFFER_OVERFLOW
+        - name: eof-read-burst
+          acceptable_count: 1000
+          track_commands:
+            - SMB2_READ
+          track_errors:
+            - STATUS_END_OF_FILE
+        - name: lock-contention-burst
+          acceptable_count: 100
+          track_commands:
+            - SMB2_LOCK
+          track_errors:
+            - STATUS_LOCK_NOT_GRANTED
+      actions:
+        dmesg:
+        journalctl:
+        debugdata:
+        stats:
+        mounts:
+        smbinfo:
+        syslogs:
+        # tcpdump: ["-s", "65536", "-B", "10240", "-C", "2", "-W", "100"]
     sockconn:
       tool: "ss"
       actions:
         dmesg:
         journalctl:
         stats:
-        tcpdump:  ["-s", "65536", "-B", "10240", "-C", "2", "-W", "100"]
+        # tcpdump: ["-s", "65536", "-B", "10240", "-C", "2", "-W", "100"]
 
   nfs:
     latency:
       tool: "nfsslower"
-      mode: "all"              # Options: all, trackonly, excludeonly
-      acceptable_count: 10     # number of commands with latency above threshold in X seconds
-      default_threshold_ms: 50  # milliseconds, by default applies to all commands
+      mode: "all"
+      acceptable_count: 10
+      default_threshold_ms: 500
       actions:
         dmesg:
         journalctl:
@@ -45,11 +123,63 @@ anomalies:
         dmesg:
     error:
       tool: "nfsiosnoop"
-      acceptable_count: 5     # number of matching error events in watch_interval_sec
-      track_commands:         # leave empty to let all NFS commands through
-      track_errors:           # at least one of track_commands/track_errors must be non-empty
-        - NFS4ERR_BAD_STATEID
-        - NFS4ERR_OLD_STATEID
+      rules:
+        - name: severe
+          acceptable_count: 3
+          track_errors:
+            - NFS4ERR_PERM
+            - NFS4ERR_IO
+            - NFS4ERR_NXIO
+            - NFS4ERR_ACCESS
+            - NFS4ERR_NOSPC
+            - NFS4ERR_ROFS
+            - NFS4ERR_DQUOT
+            - NFS4ERR_STALE
+            - NFS4ERR_BADHANDLE
+            - NFS4ERR_SERVERFAULT
+            - NFS4ERR_EXPIRED
+            - NFS4ERR_FHEXPIRED
+            - NFS4ERR_RESOURCE
+            - NFS4ERR_STALE_CLIENTID
+            - NFS4ERR_STALE_STATEID
+            - NFS4ERR_BAD_STATEID
+            - NFS4ERR_ADMIN_REVOKED
+            - NFS4ERR_CB_PATH_DOWN
+            - NFS4ERR_BADSESSION
+            - NFS4ERR_BADSLOT
+            - NFS4ERR_DEADSESSION
+            - NFS4ERR_DELEG_REVOKED
+        # Namespace misses and create collisions are common application flow,
+        # but sustained bursts are useful signals of retry loops or bad paths.
+        - name: namespace-miss-burst
+          acceptable_count: 100
+          track_commands:
+            - NFSPROC4_CLNT_OPEN
+            - NFSPROC4_CLNT_OPEN_NOATTR
+            - NFSPROC4_CLNT_LOOKUP
+            - NFSPROC4_CLNT_LOOKUP_ROOT
+            - NFSPROC4_CLNT_REMOVE
+            - NFSPROC4_CLNT_RENAME
+          track_errors:
+            - NFS4ERR_NOENT
+        - name: create-collision-burst
+          acceptable_count: 100
+          track_commands:
+            - NFSPROC4_CLNT_OPEN
+            - NFSPROC4_CLNT_CREATE
+          track_errors:
+            - NFS4ERR_EXIST
+        # The NFS client retries DELAY and handles GRACE as recovery flow
+        # throughout fs/nfs/nfs4proc.c. A concentrated rate is still notable.
+        - name: server-retry-burst
+          acceptable_count: 20
+          track_errors:
+            - NFS4ERR_DELAY
+            - NFS4ERR_GRACE
+        - name: old-stateid-burst
+          acceptable_count: 20
+          track_errors:
+            - NFS4ERR_OLD_STATEID
       actions:
         dmesg:
         journalctl:
@@ -61,7 +191,5 @@ cleanup:
   max_log_age_days: 2           # Maximum age of logs in days
   max_total_log_size_mb: 1024   # Maximum total size of all logs in MB
 
-# ** Use either track_commands (trackonly) or exclude_commands (excludeonly).
-# Mode type will determine which one is used.
-# With Mode type all, track commands with the given thresholds,
-# track other commands with the default threshold, and ignore the excluded commands.
+# Latency modes: trackonly monitors track_commands, excludeonly monitors all
+# commands except exclude_commands, and all applies overrides then exclusions.

@@ -61,6 +61,7 @@ class Controller:
         self.tool_processes = {}
         self.tool_cmd_builders = {
             "smbslower": self._get_latency_tool_cmd,
+            "smbiosnoop": self._get_error_tool_cmd,
             "nfsslower": self._get_latency_tool_cmd,
             "nfsiosnoop": self._get_error_tool_cmd,
         }

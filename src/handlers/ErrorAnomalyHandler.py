@@ -25,6 +25,31 @@ class ErrorAnomalyHandler(AnomalyHandler):
         )
 
     def detect(self, events_batch: np.ndarray) -> bool:
+        rules = self.config.track.get("rules")
+        if rules:
+            commands = events_batch["command"]
+            errors = np.bitwise_and(
+                events_batch["metric_latency_ns"], np.uint64(0xFFFFFFFF)
+            )
+            for rule in rules:
+                matches = np.ones(len(events_batch), dtype=bool)
+                if rule["track_commands"]:
+                    matches &= np.isin(commands, tuple(rule["track_commands"]))
+                if rule["track_errors"]:
+                    matches &= np.isin(errors, tuple(rule["track_errors"]))
+                count = int(np.count_nonzero(matches))
+                if __debug__:
+                    logger.debug(
+                        "Error rule %s for %s matched %d events (threshold=%d)",
+                        rule["name"],
+                        self.config.tool,
+                        count,
+                        rule["acceptable_count"],
+                    )
+                if count >= rule["acceptable_count"]:
+                    return True
+            return False
+
         count = len(events_batch)
         if __debug__:
             logger.debug(

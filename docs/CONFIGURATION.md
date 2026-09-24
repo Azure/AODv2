@@ -75,6 +75,7 @@ configuration**. Each leaf defines one detector.
 anomalies:
   smb:
     latency: ...
+    error: ...
     sockconn: ...
   nfs:
     latency: ...
@@ -90,6 +91,7 @@ recognizes. The full capability matrix is:
 | Protocol | Anomaly Type | Tool         | Filter Axes                      |
 | -------- | ------------ | ------------ | -------------------------------- |
 | `smb`    | `latency`    | `smbslower`  | `track_commands`                 |
+| `smb`    | `error`      | `smbiosnoop` | `track_commands`, `track_errors` |
 | `smb`    | `sockconn`   | `ss`         | none                             |
 | `nfs`    | `latency`    | `nfsslower`  | `track_commands`                 |
 | `nfs`    | `error`      | `nfsiosnoop` | `track_commands`, `track_errors` |
@@ -102,7 +104,7 @@ Any other protocol, type, or tool value is rejected.
 | Field              | Type    | Applies To        | Description                                                        |
 | ------------------ | ------- | ----------------- | ------------------------------------------------------------------ |
 | `tool`             | String  | All               | Backing tool. Must match the capability matrix above.              |
-| `acceptable_count` | Integer | All (default `1`) | Number of qualifying events tolerated within `watch_interval_sec`. |
+| `acceptable_count` | Integer | Latency, flat error config (default `1`) | Count that triggers within `watch_interval_sec`. |
 | `actions`          | Mapping | All               | Diagnostics to run on trigger. See [Actions](#actions).            |
 
 ### Latency Anomalies
@@ -148,29 +150,48 @@ respective protocol.
 
 ### Error Anomalies
 
-Error detectors (NFS only) count matching error events.
+Error detectors count matching SMB NTSTATUS or NFSv4 error events. Use `rules`
+when different command/error combinations need different thresholds. AOD sends
+the union of all rule filters to one eBPF process, then evaluates each rule's
+exact command/error intersection independently within `watch_interval_sec`.
 
 ```yaml
 error:
-  tool: "nfsiosnoop"
-  acceptable_count: 5
-  track_commands: # optional allowlist of NFS commands
-  track_errors: # allowlist of NFS error codes
-    - NFS4ERR_BAD_STATEID
-    - NFS4ERR_OLD_STATEID
+  tool: "smbiosnoop"
+  rules:
+    - name: severe
+      acceptable_count: 3
+      track_errors:
+        - STATUS_IO_TIMEOUT
+        - STATUS_DISK_FULL
+    - name: missing-path-burst
+      acceptable_count: 100
+      track_commands:
+        - SMB2_CREATE
+      track_errors:
+        - STATUS_OBJECT_NAME_NOT_FOUND
   actions:
     dmesg:
     journalctl:
 ```
 
-| Field            | Type            | Description                                        |
-| ---------------- | --------------- | -------------------------------------------------- |
-| `track_commands` | List of strings | NFS command names to match. Empty means no filter. |
-| `track_errors`   | List of strings | NFS error codes to match. Empty means no filter.   |
+| Field              | Type            | Description                                                        |
+| ------------------ | --------------- | ------------------------------------------------------------------ |
+| `rules`            | List of mappings | Named command/error filters with independent count thresholds.     |
+| `name`             | String          | Unique non-empty rule name.                                        |
+| `acceptable_count` | Integer >= 1    | Matching events that trigger this rule in one watcher interval.    |
+| `track_commands`   | List of strings | Optional command allowlist; omitted means every command.           |
+| `track_errors`     | List of strings | Optional NTSTATUS/NFSv4 error allowlist; omitted means every error. |
 
-At least one of `track_commands` or `track_errors` must be non-empty. An empty
-axis imposes no allowlist on that dimension. All names are validated against the
-known NFS command and error tables.
+Each rule must specify at least one of `track_commands` or `track_errors`.
+Names are validated against the selected tool's command and error tables.
+Top-level `track_commands`, `track_errors`, and `acceptable_count` remain
+supported as the legacy single-rule form, but cannot be mixed with `rules`.
+
+The shipped defaults assign low thresholds to high-signal failures and higher
+thresholds to expected outcomes such as SMB missing-name responses and NFS
+`NFS4ERR_NOENT`, `NFS4ERR_DELAY`, and `NFS4ERR_OLD_STATEID`. This suppresses
+individual expected failures while still detecting concentrated bursts.
 
 ### Socket Connection Anomalies
 
