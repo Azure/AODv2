@@ -2,12 +2,35 @@
 
 import logging
 import warnings
+from pathlib import Path
 import yaml
 from shared_data import ALL_SMB_CMDS, ALL_ERROR_CODES
 from utils.anomaly_type import AnomalyType
-from utils.config_schema import Config, WatcherConfig, GuardianConfig, AnomalyConfig
+from utils.config_schema import (
+    Config,
+    WatcherConfig,
+    GuardianConfig,
+    AnomalyConfig,
+    UploadConfig,
+    UploadDestination,
+    UploadIdentity,
+    UploadLimits,
+    UploadRetry,
+    UploadBehavior,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _deep_merge(base: dict, overrides: dict) -> dict:
+    """Recursive dict merge; scalars and lists in `overrides` win outright."""
+    merged = dict(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 class ConfigManager:
@@ -21,13 +44,38 @@ class ConfigManager:
         if __debug__:
             logger.info("Loading configuration from: %s", config_path)
         config_data = self._load_yaml(config_path)
+        config_data = self._apply_drop_ins(config_data, config_path)
         watcher = self._parse_watcher(config_data)
         guardian = self._parse_guardian(config_data)
-        self.data = self._build_config(config_data, watcher, guardian)
+        upload = self._parse_upload(config_data)
+        self.data = self._build_config(config_data, watcher, guardian, upload)
         if __debug__:
             import pprint
             logger.debug("Loaded config object:\n%s", pprint.pformat(self.data))
             logger.info("Configuration loaded successfully")
+
+    def _apply_drop_ins(self, config_data: dict, config_path: str) -> dict:
+        """Merge `config.d/*.yaml` over the main file, in filename order.
+
+        Lets tooling such as `aodv2 upload enable` write settings without
+        rewriting a hand-edited config.yaml and losing its comments.
+        """
+        drop_in_dir = Path(config_path).resolve().parent / "config.d"
+        if not drop_in_dir.is_dir():
+            return config_data
+
+        for drop_in in sorted(drop_in_dir.glob("*.yaml")):
+            try:
+                with open(drop_in, "r", encoding="utf-8") as handle:
+                    overrides = yaml.safe_load(handle) or {}
+            except (OSError, yaml.YAMLError) as exc:
+                raise RuntimeError(f"Invalid config drop-in {drop_in}: {exc}") from exc
+            if not isinstance(overrides, dict):
+                raise RuntimeError(f"Config drop-in {drop_in} must contain a mapping")
+            if __debug__:
+                logger.info("Applying config drop-in: %s", drop_in)
+            config_data = _deep_merge(config_data, overrides)
+        return config_data
 
     def _load_yaml(self, config_path: str):
         """Load the YAML configuration file."""
@@ -87,7 +135,7 @@ class ConfigManager:
 
         return dispatch[anomaly_type](anomaly)
 
-    def _build_config(self, config_data: dict, watcher, guardian):
+    def _build_config(self, config_data: dict, watcher, guardian, upload):
         """Build the top-level config object."""
         return Config(
             watch_interval_sec=config_data["watch_interval_sec"],
@@ -96,7 +144,91 @@ class ConfigManager:
             guardian=guardian,
             cleanup=config_data["cleanup"],
             audit=config_data["audit"],
+            upload=upload,
         )
+
+    def _parse_upload(self, config_data: dict) -> UploadConfig:
+        """Parse the optional upload section.
+
+        An absent section means upload is disabled, so existing configs keep
+        working unchanged.
+        """
+        upload_data = config_data.get("upload")
+        if not upload_data:
+            logger.debug("No upload section in config; auto-upload disabled")
+            return UploadConfig()
+
+        destination = UploadDestination(**self._section(upload_data, "destination", UploadDestination))
+        identity = UploadIdentity(**self._section(upload_data, "identity", UploadIdentity))
+        limits = UploadLimits(**self._section(upload_data, "limits", UploadLimits))
+        retry = UploadRetry(**self._section(upload_data, "retry", UploadRetry))
+        behavior = UploadBehavior(**self._section(upload_data, "behavior", UploadBehavior))
+
+        upload = UploadConfig(
+            enabled=bool(upload_data.get("enabled", False)),
+            protocol=upload_data.get("protocol", "blob"),
+            destination=destination,
+            identity=identity,
+            limits=limits,
+            retry=retry,
+            scan_interval_sec=upload_data.get("scan", {}).get("scan_interval_sec", 300),
+            behavior=behavior,
+        )
+        self._validate_upload(upload, config_data.get("cleanup", {}))
+        return upload
+
+    @staticmethod
+    def _section(upload_data: dict, key: str, schema) -> dict:
+        """Extract a subsection, rejecting unknown keys so typos are not silent."""
+        values = upload_data.get(key) or {}
+        if not isinstance(values, dict):
+            raise ValueError(f"upload.{key} must be a mapping, got {type(values).__name__}")
+        allowed = set(schema.__dataclass_fields__)
+        unknown = set(values) - allowed
+        if unknown:
+            raise ValueError(
+                f"Unknown key(s) in upload.{key}: {sorted(unknown)}. Allowed: {sorted(allowed)}"
+            )
+        return values
+
+    def _validate_upload(self, upload: UploadConfig, cleanup: dict) -> None:
+        """Reject unusable upload settings at startup rather than at first anomaly."""
+        if upload.protocol not in ("blob", "local"):
+            raise ValueError(
+                f"Unsupported upload.protocol '{upload.protocol}'; use 'blob' "
+                "('local' writes to disk and is for testing only)"
+            )
+
+        if upload.identity.kind not in ("managed", "arc"):
+            raise ValueError(f"Unsupported upload.identity.kind '{upload.identity.kind}'")
+
+        limits = upload.limits
+        if limits.block_size_mb <= 0 or limits.multipart_threshold_mb <= 0:
+            raise ValueError("upload.limits block_size_mb and multipart_threshold_mb must be positive")
+        if limits.block_size_mb > limits.multipart_threshold_mb:
+            raise ValueError("upload.limits.block_size_mb cannot exceed multipart_threshold_mb")
+
+        max_total_log_size_mb = cleanup.get("max_total_log_size_mb", 200)
+        if limits.upload_spool_max_mb > max_total_log_size_mb:
+            raise ValueError(
+                f"upload.limits.upload_spool_max_mb ({limits.upload_spool_max_mb}) exceeds "
+                f"cleanup.max_total_log_size_mb ({max_total_log_size_mb}); packages would be "
+                "deleted before they could be uploaded"
+            )
+
+        if not upload.enabled:
+            return
+
+        if upload.protocol == "local":
+            return  # destination fields are unused by the filesystem transport
+
+        if not upload.destination.account or not upload.destination.container:
+            raise ValueError("upload.enabled requires destination.account and destination.container")
+        if upload.behavior.require_https and "://" in upload.destination.endpoint_suffix:
+            raise ValueError(
+                "upload.destination.endpoint_suffix must be a host suffix such as "
+                "'core.windows.net', not a URL"
+            )
 
     def _check_codes(self, codes, all_codes, code_type):
         """Check that codes are present in all_codes, not duplicated, and not

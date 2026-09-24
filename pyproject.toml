@@ -1,3 +1,48 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linux-diagnostics"
+version = "2.0.0"
+description = "Azure Files Linux client diagnostics daemon"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.21.0",
+    "PyYAML>=6.0",
+    "zstandard>=0.19.0",
+]
+
+[project.optional-dependencies]
+# Only needed when upload.enabled is true.
+upload = ["azure-storage-blob>=12.19.0", "azure-identity>=1.15.0"]
+# Used by the analysis scripts under tests/, never by the daemon.
+tools = ["pandas>=1.5.0", "matplotlib>=3.5.0"]
+
+[project.scripts]
+aodv2 = "cli:main"
+linux_diagnostics_controller = "Controller:main"
+
+[tool.setuptools]
+# src/ is a flat module directory, not a package, so both must be listed.
+package-dir = {"" = "src"}
+py-modules = [
+    "AnomalyWatcher",
+    "ConfigManager",
+    "Controller",
+    "EventDispatcher",
+    "LogCollector",
+    "SpaceWatcher",
+    "UploadStateStore",
+    "Uploader",
+    "cli",
+    "shared_data",
+]
+packages = ["base", "handlers", "transports", "utils"]
+
+[tool.setuptools.package-data]
+"*" = ["bin/*"]
+
 [tool.black]
 line-length = 100
 target-version = ['py39']
