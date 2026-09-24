@@ -186,6 +186,53 @@ anomalies:
         syslogs:
         trace-cmd: ["-e", "nfs", "-e", "nfs4", "-e", "sunrpc", "-b", "1024"]
 
+  io:
+    error:
+      tool: "iosnoop"
+      rules:
+        # Device, filesystem, and capacity failures are anomalous at low rates.
+        - name: severe
+          acceptable_count: 3
+          track_errors:
+            - EIO
+            - ENXIO
+            - ENODEV
+            - ENOSPC
+            - EROFS
+            - EDQUOT
+            - ESTALE
+        # Applications routinely probe paths. A concentrated miss rate for
+        # lookup-like operations is more useful than each individual ENOENT.
+        - name: path-miss-burst
+          acceptable_count: 100
+          track_commands:
+            - OPEN
+            - STAT
+            - READLINK
+          track_errors:
+            - ENOENT
+        - name: create-collision-burst
+          acceptable_count: 100
+          track_commands:
+            - CREATE
+            - MKDIR
+            - LINK
+            - SYMLINK
+          track_errors:
+            - EEXIST
+        - name: lock-contention-burst
+          acceptable_count: 100
+          track_commands:
+            - LOCK_FCNTL
+          track_errors:
+            - EACCES
+            - EAGAIN
+      actions:
+        dmesg:
+        journalctl:
+        mounts:
+        syslogs:
+
 cleanup:
   cleanup_interval_sec: 300     # Interval in seconds to run cleanup
   max_log_age_days: 2           # Maximum age of logs in days

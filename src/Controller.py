@@ -64,6 +64,7 @@ class Controller:
             "smbiosnoop": self._get_error_tool_cmd,
             "nfsslower": self._get_latency_tool_cmd,
             "nfsiosnoop": self._get_error_tool_cmd,
+            "iosnoop": self._get_iosnoop_tool_cmd,
         }
 
         # Initialize all components
@@ -197,6 +198,12 @@ class Controller:
             cmd += ["-c", ",".join(str(c) for c in sorted(track_cmds))]
         if track_errs:
             cmd += ["-e", ",".join(str(e) for e in sorted(track_errs))]
+        return cmd
+
+    def _get_iosnoop_tool_cmd(self, tool_name: str = "iosnoop") -> list[str]:
+        """Build iosnoop's error filters and select its AOD event mode."""
+        cmd = self._get_error_tool_cmd(tool_name)
+        cmd.insert(1, "--aod")
         return cmd
 
     def trigger_snapshot(

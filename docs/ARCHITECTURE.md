@@ -44,9 +44,11 @@ Central coordinator and supervisor.
     collectors terminate with the daemon.
 
 - eBPF command builders: `smbslower` and `nfsslower` (latency) are built by
-  `_get_latency_tool_cmd`; `nfsiosnoop` (error) by `_get_error_tool_cmd`.
-  Userspace tools (`ss`/sockconn) have no process-supervisor entry and are
-  driven by `AnomalyWatcher`.
+  `_get_latency_tool_cmd`; `smbiosnoop` and `nfsiosnoop` (protocol errors) by
+  `_get_error_tool_cmd`; and `iosnoop` (VFS errors) by
+  `_get_iosnoop_tool_cmd`, which enables its shared-ring AOD mode. Userspace
+  tools (`ss`/sockconn) have no process-supervisor entry and are driven by
+  `AnomalyWatcher`.
 
 - Signals: `SIGTERM`/`SIGINT` trigger graceful `stop()`; `SIGUSR1` enqueues a
   full-system snapshot (collects all configured diagnostic logs).

@@ -17,6 +17,36 @@ RB_MAX_RECORDS = (2048 * 4096) // 56  # 149797
 
 MAX_WAIT = 0.005  # 5 ms, used in anomaly watcher
 
+ALL_IO_SYSCALLS = MappingProxyType(
+    {
+        "OPEN": 1,
+        "READ": 3,
+        "WRITE": 4,
+        "STAT": 6,
+        "MKDIR": 9,
+        "RMDIR": 11,
+        "UNLINK": 12,
+        "RENAME": 14,
+        "FCHMOD": 20,
+        "TRUNCATE": 23,
+        "LINK": 25,
+        "SYMLINK": 27,
+        "READLINK": 29,
+        "READV": 33,
+        "WRITEV": 34,
+        "MMAP": 45,
+        "MUNMAP": 47,
+        "CREATE": 48,
+        "FALLOCATE": 49,
+        "GETDENTS": 50,
+        "LOCK_FCNTL": 51,
+    }
+)
+
+ALL_ERRNOS = MappingProxyType(
+    {name: number for number, name in errno.errorcode.items()}
+)
+
 ALL_SMB_CMDS = MappingProxyType(
     {
         "SMB2_NEGOTIATE": 0,

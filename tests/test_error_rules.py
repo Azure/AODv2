@@ -59,6 +59,28 @@ class ErrorRuleConfigTests(unittest.TestCase):
                 self.key,
             )
 
+    def test_io_rule_resolves_syscall_and_errno_names(self):
+        key = AnomalyKey(Protocol.IO, AnomalyType.ERROR)
+        axes = PROTOCOL_SPEC[Protocol.IO][AnomalyType.ERROR]["iosnoop"]
+
+        track = self.manager._get_error_track_cmds(
+            {
+                "rules": [
+                    {
+                        "name": "failed-writes",
+                        "acceptable_count": 3,
+                        "track_commands": ["WRITE"],
+                        "track_errors": ["EIO", "ENOSPC"],
+                    }
+                ]
+            },
+            axes,
+            key,
+        )
+
+        self.assertEqual(track["track_commands"], frozenset({4}))
+        self.assertEqual(track["track_errors"], frozenset({5, 28}))
+
 
 class ErrorRuleHandlerTests(unittest.TestCase):
     @staticmethod

@@ -38,6 +38,8 @@ from utils.anomaly_type import (
 )
 from utils.config_schema import AnomalyConfig, AnomalyKey
 from utils.shared_data import (
+    ALL_ERRNOS,
+    ALL_IO_SYSCALLS,
     ALL_NFS_CMDS,
     ALL_NFS_ERRS,
     ALL_SMB_CMDS,
@@ -125,6 +127,19 @@ def _smb_error_config(*, acceptable_count: int = 2) -> AnomalyConfig:
         track={
             "track_commands": frozenset(ALL_SMB_CMDS.values()),
             "track_errors": frozenset(ALL_SMB_ERRS.values()),
+        },
+    )
+
+
+def _io_error_config(*, acceptable_count: int = 2) -> AnomalyConfig:
+    return _make_anomaly_config(
+        protocol=Protocol.IO,
+        anomaly_type=AnomalyType.ERROR,
+        tool="iosnoop",
+        acceptable_count=acceptable_count,
+        track={
+            "track_commands": frozenset({ALL_IO_SYSCALLS["WRITE"]}),
+            "track_errors": frozenset({ALL_ERRNOS["EIO"]}),
         },
     )
 
@@ -432,6 +447,24 @@ class RunLoopTests(unittest.TestCase):
         ctrl = _make_controller(anomalies={cfg.key: cfg}, watch_interval_sec=5)
         watcher = AnomalyWatcher(ctrl)
         ctrl.eventQueue.put(_make_event_batch("smbiosnoop", commands=[5, 8]))
+        ctrl.eventQueue.put(None)
+
+        watcher.run()
+
+        action = ctrl.anomalyActionQueue.get_nowait()
+        self.assertEqual(action["anomaly_key"], cfg.key)
+
+    def test_io_error_events_route_to_iosnoop_handler(self):
+        cfg = _io_error_config(acceptable_count=2)
+        ctrl = _make_controller(anomalies={cfg.key: cfg}, watch_interval_sec=5)
+        watcher = AnomalyWatcher(ctrl)
+        ctrl.eventQueue.put(
+            _make_event_batch(
+                "iosnoop",
+                commands=[ALL_IO_SYSCALLS["WRITE"]] * 2,
+                metric_values=[ALL_ERRNOS["EIO"]] * 2,
+            )
+        )
         ctrl.eventQueue.put(None)
 
         watcher.run()

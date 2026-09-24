@@ -1,5 +1,12 @@
 from enum import Enum
-from utils.shared_data import ALL_SMB_CMDS, ALL_SMB_ERRS, ALL_NFS_CMDS, ALL_NFS_ERRS
+from utils.shared_data import (
+    ALL_ERRNOS,
+    ALL_IO_SYSCALLS,
+    ALL_NFS_CMDS,
+    ALL_NFS_ERRS,
+    ALL_SMB_CMDS,
+    ALL_SMB_ERRS,
+)
 
 
 class Protocol(Enum):
@@ -7,6 +14,7 @@ class Protocol(Enum):
 
     SMB = "smb"
     NFS = "nfs"
+    IO = "io"
     # Synthetic protocol used internally to tag full-system snapshot events
     # (manual SIGUSR1 trigger or service shutdown). Not valid in user config.
     AOD = "aod"
@@ -31,6 +39,7 @@ TOOL_NAME_TO_ID = {
     "smbiosnoop": 1,
     "nfsslower": 10,
     "nfsiosnoop": 11,
+    "iosnoop": 20,
     # Add more as needed
 }
 
@@ -98,6 +107,14 @@ PROTOCOL_SPEC = {
         },
         AnomalyType.SOCKCONN: {
             "ss": {},
+        },
+    },
+    Protocol.IO: {
+        AnomalyType.ERROR: {
+            "iosnoop": {
+                "track_commands": ALL_IO_SYSCALLS,
+                "track_errors": ALL_ERRNOS,
+            },
         },
     },
 }

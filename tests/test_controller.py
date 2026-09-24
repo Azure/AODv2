@@ -9,7 +9,13 @@ from Controller import Controller, handle_signal, handle_snapshot_signal
 from utils.anomaly_type import AnomalyType, Protocol
 from utils.config_schema import AnomalyKey
 from utils.pdeathsig_wrapper import pdeathsig_preexec
-from utils.shared_data import ALL_NFS_CMDS, ALL_NFS_ERRS, ALL_SMB_CMDS, ALL_SMB_ERRS
+from utils.shared_data import (
+    ALL_ERRNOS,
+    ALL_NFS_CMDS,
+    ALL_NFS_ERRS,
+    ALL_SMB_CMDS,
+    ALL_SMB_ERRS,
+)
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "../config/config.yaml")
 SRC_BIN_DIR = os.path.join(os.path.dirname(controller_mod.__file__), "bin")
@@ -134,7 +140,14 @@ class TestExtractTools(unittest.TestCase):
         # Mirrors all eBPF and userspace detectors in config/config.yaml.
         self.assertEqual(
             controller._extract_tools(),
-            {"smbslower", "smbiosnoop", "ss", "nfsslower", "nfsiosnoop"},
+            {
+                "smbslower",
+                "smbiosnoop",
+                "ss",
+                "nfsslower",
+                "nfsiosnoop",
+                "iosnoop",
+            },
         )
 
 
@@ -203,6 +216,24 @@ class TestErrorToolCmd(unittest.TestCase):
         self.assertEqual(set(err_ids), set(ALL_SMB_ERRS.values()))
         self.assertEqual(err_ids, sorted(err_ids))
 
+    def test_iosnoop_cmd_uses_aod_mode_and_rule_unions(self):
+        cmd = self.controller._get_iosnoop_tool_cmd()
+
+        self.assertEqual(cmd[:2], [os.path.join(SRC_BIN_DIR, "iosnoop"), "--aod"])
+        # The global severe rule applies to every operation, so the kernel
+        # command axis is unrestricted. Userspace applies command-specific
+        # intersections for the remaining rules.
+        self.assertNotIn("-c", cmd)
+        error_ids = [int(x) for x in cmd[cmd.index("-e") + 1].split(",")]
+        self.assertTrue(
+            {
+                ALL_ERRNOS["EIO"],
+                ALL_ERRNOS["ENOENT"],
+                ALL_ERRNOS["EEXIST"],
+                ALL_ERRNOS["EAGAIN"],
+            }.issubset(error_ids)
+        )
+
 
 class TestRunStartsComponents(unittest.TestCase):
     """run() is the orchestration entry point. Verify it spins up a
@@ -239,6 +270,7 @@ class TestRunStartsComponents(unittest.TestCase):
                     "smbiosnoop_Supervisor",
                     "nfsslower_Supervisor",
                     "nfsiosnoop_Supervisor",
+                    "iosnoop_Supervisor",
                 ]
             ),
         )
@@ -274,6 +306,10 @@ class TestRunStartsComponents(unittest.TestCase):
         self.assertEqual(
             builders_by_tool["nfsiosnoop"](),
             self.controller._get_error_tool_cmd("nfsiosnoop"),
+        )
+        self.assertEqual(
+            builders_by_tool["iosnoop"](),
+            self.controller._get_iosnoop_tool_cmd("iosnoop"),
         )
 
     def test_supervises_four_component_threads_with_logcollector_fatal(self):

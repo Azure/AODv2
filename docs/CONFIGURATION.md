@@ -81,6 +81,8 @@ anomalies:
     latency: ...
     error: ...
     sockconn: ...
+  io:
+    error: ...
 ```
 
 ### Supported Combinations
@@ -96,6 +98,7 @@ recognizes. The full capability matrix is:
 | `nfs`    | `latency`    | `nfsslower`  | `track_commands`                 |
 | `nfs`    | `error`      | `nfsiosnoop` | `track_commands`, `track_errors` |
 | `nfs`    | `sockconn`   | `ss`         | none                             |
+| `io`     | `error`      | `iosnoop`    | `track_commands`, `track_errors` |
 
 Any other protocol, type, or tool value is rejected.
 
@@ -150,10 +153,11 @@ respective protocol.
 
 ### Error Anomalies
 
-Error detectors count matching SMB NTSTATUS or NFSv4 error events. Use `rules`
-when different command/error combinations need different thresholds. AOD sends
-the union of all rule filters to one eBPF process, then evaluates each rule's
-exact command/error intersection independently within `watch_interval_sec`.
+Error detectors count matching SMB NTSTATUS, NFSv4 status, or Linux errno
+events. Use `rules` when different command/error combinations need different
+thresholds. AOD sends the union of all rule filters to one eBPF process, then
+evaluates each rule's exact command/error intersection independently within
+`watch_interval_sec`.
 
 ```yaml
 error:
@@ -181,7 +185,7 @@ error:
 | `name`             | String          | Unique non-empty rule name.                                        |
 | `acceptable_count` | Integer >= 1    | Matching events that trigger this rule in one watcher interval.    |
 | `track_commands`   | List of strings | Optional command allowlist; omitted means every command.           |
-| `track_errors`     | List of strings | Optional NTSTATUS/NFSv4 error allowlist; omitted means every error. |
+| `track_errors`     | List of strings | Optional NTSTATUS/NFSv4/errno allowlist; omitted means every error. |
 
 Each rule must specify at least one of `track_commands` or `track_errors`.
 Names are validated against the selected tool's command and error tables.
@@ -192,6 +196,40 @@ The shipped defaults assign low thresholds to high-signal failures and higher
 thresholds to expected outcomes such as SMB missing-name responses and NFS
 `NFS4ERR_NOENT`, `NFS4ERR_DELAY`, and `NFS4ERR_OLD_STATEID`. This suppresses
 individual expected failures while still detecting concentrated bursts.
+
+For `io/error`, `iosnoop` emits only failed VFS operations. `track_commands`
+uses names such as `OPEN`, `WRITE`, and `LOCK_FCNTL`, while
+`track_errors` uses positive Linux errno names such as `EIO`, `ENOSPC`, and
+`ENOENT`. This supports syscall-specific policies without counting successful
+operations. For example:
+
+```yaml
+io:
+  error:
+    tool: "iosnoop"
+    rules:
+      - name: failed-writes
+        acceptable_count: 3
+        track_commands:
+          - WRITE
+          - WRITEV
+        track_errors:
+          - EIO
+          - ENOSPC
+      - name: open-miss-burst
+        acceptable_count: 100
+        track_commands:
+          - OPEN
+        track_errors:
+          - ENOENT
+    actions:
+      dmesg:
+      journalctl:
+```
+
+Only operations emitted by the current VFS probes are accepted as command
+names. Network-only detectors and captures, including `sockconn` and
+`tcpdump`, do not apply to the `io` protocol.
 
 ### Socket Connection Anomalies
 
