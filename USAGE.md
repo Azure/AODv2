@@ -25,6 +25,66 @@ sudo journalctl -u aodv2 -f         # follow logs
 A configuration change to `/etc/aodv2/config.yaml` requires a restart to take
 effect.
 
+### Limiting CPU and memory usage
+
+`systemd` runs `aodv2` in its own control group. Administrators can cap the
+resources used by the controller and all of its tracer and capture child
+processes with a service drop-in:
+
+```bash
+sudo systemctl edit aodv2
+```
+
+Add the following settings, adjusting the percentages for the host:
+
+```ini
+[Service]
+CPUQuota=20%
+MemoryHigh=10%
+MemoryMax=20%
+```
+
+`CPUQuota` is relative to one logical CPU, not the host's total CPU capacity.
+For example, `CPUQuota=20%` permits one fifth of one CPU, `CPUQuota=100%`
+permits one full CPU, and `CPUQuota=200%` permits up to two full CPUs.
+
+Both `MemoryHigh` and `MemoryMax` accept percentages relative to the host's
+installed physical RAM. `MemoryHigh=10%` begins reclaiming and throttling
+memory when the service uses 10% of RAM. `MemoryMax=20%` is a hard limit and
+may cause processes in the service to be terminated by the cgroup OOM killer
+if memory cannot be reclaimed. Keep `MemoryHigh` below `MemoryMax` so normal
+pressure is handled before the hard limit is reached.
+
+As an optional additional safeguard on systems running `systemd-oomd`, an
+administrator can make AODv2 eligible for termination under sustained memory
+pressure:
+
+```ini
+[Service]
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=60%
+```
+
+This percentage is a Pressure Stall Information (PSI) memory-pressure
+threshold, not a percentage of RAM consumed. It does not cap memory usage and
+is ignored unless `ManagedOOMMemoryPressure=kill` is also set. When the
+threshold remains exceeded, `systemd-oomd` may terminate the service's cgroup.
+Use `MemoryHigh` and `MemoryMax` for utilization limits, and use the managed
+OOM settings only when pressure-based termination is also desired.
+
+Save the drop-in, then apply it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart aodv2
+systemctl show aodv2 -p CPUQuotaPerSecUSec -p MemoryHigh -p MemoryMax \
+  -p ManagedOOMMemoryPressure -p ManagedOOMMemoryPressureLimit
+```
+
+The drop-in is stored under `/etc/systemd/system/aodv2.service.d/` and is kept
+separate from the package-owned service file, so package upgrades do not
+overwrite the administrator's limits.
+
 ### Observing anomaly detections
 
 Each detected anomaly is logged at `CRITICAL` to the system journal (syslog
@@ -104,15 +164,15 @@ full-system snapshots), and `<anomaly>` is the anomaly type (`latency`, `error`,
 
 Each enabled action writes one log file into the bundle:
 
-| Supported actions (`actions:` key) | File in bundle   | Source                     |
-| ---------------------------------- | ---------------- | -------------------------- |
-| `dmesg`                            | `dmesg.log`      | Kernel ring buffer         |
-| `journalctl`                       | `journalctl.log` | systemd journal (windowed) |
-| `syslogs`                          | `syslogs.log`    | System log tail            |
-| `debugdata`                        | `debug_data.log` | `/proc/fs/cifs/DebugData`  |
-| `stats`                            | `cifsstats.log`  | `/proc/fs/cifs/Stats`      |
-| `mounts`                           | `mounts.log`     | Active mount inventory     |
-| `smbinfo`                          | `smbinfo.log`    | `smbinfo` output           |
+| Supported actions (`actions:` key) | File in bundle   | Source                     | Protocol scope |
+| ---------------------------------- | ---------------- | -------------------------- | -------------- |
+| `dmesg`                            | `dmesg.log`      | Kernel ring buffer         | SMB, NFS       |
+| `journalctl`                       | `journalctl.log` | systemd journal (windowed) | SMB, NFS       |
+| `syslogs`                          | `syslogs.log`    | System log tail            | SMB, NFS       |
+| `debugdata`                        | `debug_data.log` | `/proc/fs/cifs/DebugData`  | SMB-focused    |
+| `stats`                            | `cifsstats.log`  | `/proc/fs/cifs/Stats`      | SMB-focused    |
+| `mounts`                           | `mounts.log`     | Active mount inventory     | SMB, NFS       |
+| `smbinfo`                          | `smbinfo.log`    | `smbinfo` output           | SMB-focused    |
 
 ### Capture bundle contents
 
@@ -132,9 +192,11 @@ Bundles are `zstd`-compressed tar archives:
 ```bash
 # List contents
 zstd -dc aod_quick_<ts>_smb_latency.tar.zst | tar -tv
+zstd -dc aod_quick_<ts>_nfs_error.tar.zst | tar -tv
 
 # Extract
 zstd -dc aod_quick_<ts>_smb_latency.tar.zst | tar -x
+zstd -dc aod_quick_<ts>_nfs_error.tar.zst | tar -x
 ```
 
 ---
@@ -198,6 +260,17 @@ anomalies:
         journalctl:
         stats:
         tcpdump: ["-s", "65536", "-B", "10240", "-C", "2", "-W", "100"]
+  nfs:
+    latency:
+      tool: "nfsslower" # source eBPF probe
+      mode: "all"
+      acceptable_count: 10
+      default_threshold_ms: 50
+      actions:
+        dmesg:
+        journalctl:
+        syslogs:
+        trace-cmd: ["-e", "nfs", "-e", "nfs4", "-e", "sunrpc", "-b", "1024"]
 ```
 
 **Common fields:**
@@ -223,6 +296,8 @@ Keys fall into two groups:
 
 - **Quick actions** — `dmesg`, `journalctl`, `syslogs`, `debugdata`, `stats`,
   `mounts`, `smbinfo`. Take no arguments; leave the value empty.
+  `debugdata`, `stats`, and `smbinfo` are SMB-focused actions; the others are
+  applicable to both SMB and NFS anomaly workflows.
 - **Captures** — `tcpdump`, `trace-cmd`. Take a list of CLI arguments. AODv2
   supplies the output file and protocol filter itself; the following are
   required and reserved:
