@@ -1,8 +1,8 @@
 %global debug_package %{nil}
 
 Name:           aodv2
-Version:        0.1.0
-Release:        1%{?dist}
+Version:        %{aod_version}
+Release:        %{aod_release}%{?dist}
 Summary:        Always-on diagnostics daemon for Linux NFS and SMB filesystems
 URL:            https://github.com/Azure/AODv2
 License:        MIT
@@ -69,11 +69,3 @@ fi
 %config(noreplace) %{_aod_etc}/config.yaml
 %config(noreplace) %{_aod_etc}/aodv2.env
 %{_unitdir}/aodv2.service
-
-%changelog
-* Mon Jun 08 2026 Meetakshi Setiya <msetiya@microsoft.com> - 0.1.0-1
-- Renamed package and systemd unit to aodv2; install tree under
-  /opt/aodv2, config under /etc/aodv2, build venv from pyproject.toml
-  in %%post, run service from venv interpreter.
-* Wed Apr 30 2025 Shyam Prasad N <sprasad@microsoft.com> - 1.0-1
-- Initial RPM package

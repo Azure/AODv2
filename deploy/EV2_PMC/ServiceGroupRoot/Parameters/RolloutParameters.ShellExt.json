@@ -1,0 +1,90 @@
+{
+  "$schema": "https://ev2schema.azure.net/schemas/2020-01-01/rolloutParameters.json",
+  "contentVersion": "1.0.0.0",
+  "shellExtensions": [
+    {
+      "name": "PMCTest",
+      "type": "azl3",
+      "properties": {
+        "maxExecutionTime": "PT30M",
+        "useFallBackLocations": true,
+        "skipDeleteAfterExecution": false
+      },
+      "package": {
+        "reference": {
+          "path": "Packages/ShellExt/pmc_packages.tar"
+        }
+      },
+      "launch": {
+        "command": ["/bin/sh", "-c", "chmod +x start.sh && ./start.sh test"],
+        "subnetIds": [
+          {
+            "id": "/subscriptions/__SUBSCRIPTION_ID__/resourceGroups/__PMC_MSI_RG__/providers/Microsoft.Network/virtualNetworks/__PMC_VNET_NAME__/subnets/__PMC_SUBNET_NAME__"
+          }
+        ],
+        "identity": {
+          "type": "UserAssigned",
+          "userAssignedIdentities": [
+            "/subscriptions/__SUBSCRIPTION_ID__/resourceGroups/__PMC_MSI_RG__/providers/Microsoft.ManagedIdentity/userAssignedIdentities/__PMC_MSI_NAME__"
+          ]
+        }
+      }
+    },
+    {
+      "name": "PMCPublish",
+      "type": "azl3",
+      "properties": {
+        "maxExecutionTime": "PT50M",
+        "useFallBackLocations": true,
+        "skipDeleteAfterExecution": false
+      },
+      "package": {
+        "reference": {
+          "path": "Packages/ShellExt/pmc_packages.tar"
+        }
+      },
+      "launch": {
+        "command": ["/bin/sh", "-c", "chmod +x start.sh && ./start.sh publish"],
+        "subnetIds": [
+          {
+            "id": "/subscriptions/__SUBSCRIPTION_ID__/resourceGroups/__PMC_MSI_RG__/providers/Microsoft.Network/virtualNetworks/__PMC_VNET_NAME__/subnets/__PMC_SUBNET_NAME__"
+          }
+        ],
+        "identity": {
+          "type": "UserAssigned",
+          "userAssignedIdentities": [
+            "/subscriptions/__SUBSCRIPTION_ID__/resourceGroups/__PMC_MSI_RG__/providers/Microsoft.ManagedIdentity/userAssignedIdentities/__PMC_MSI_NAME__"
+          ]
+        }
+      }
+    },
+    {
+      "name": "PMCRollback",
+      "type": "azl3",
+      "properties": {
+        "maxExecutionTime": "PT50M",
+        "useFallBackLocations": true,
+        "skipDeleteAfterExecution": false
+      },
+      "package": {
+        "reference": {
+          "path": "Packages/ShellExt/pmc_packages.tar"
+        }
+      },
+      "launch": {
+        "command": ["/bin/sh", "-c", "chmod +x start.sh && ./start.sh rollback"],
+        "subnetIds": [
+          {
+            "id": "/subscriptions/__SUBSCRIPTION_ID__/resourceGroups/__PMC_MSI_RG__/providers/Microsoft.Network/virtualNetworks/__PMC_VNET_NAME__/subnets/__PMC_SUBNET_NAME__"
+          }
+        ],
+        "identity": {
+          "type": "UserAssigned",
+          "userAssignedIdentities": [
+            "/subscriptions/__SUBSCRIPTION_ID__/resourceGroups/__PMC_MSI_RG__/providers/Microsoft.ManagedIdentity/userAssignedIdentities/__PMC_MSI_NAME__"
+          ]
+        }
+      }
+    }
+  ]
+}

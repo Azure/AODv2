@@ -19,6 +19,7 @@ rpmbuild/
 debbuild/
 debs/
 tmp/
+/PACKAGES/
 develop-eggs/
 dist/
 downloads/

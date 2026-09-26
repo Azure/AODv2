@@ -1,0 +1,39 @@
+{
+  "$schema": "https://ev2schema.azure.net/schemas/2020-04-01/RegionAgnosticServiceModel.json",
+  "contentVersion": "1.0.0",
+  "serviceMetadata": {
+    "serviceIdentifier": "__SERVICE_TREE_ID__",
+    "serviceGroup": "__SERVICE_GROUP_NAME__",
+    "environment": "__ENVIRONMENT__",
+    "tenantId": "__TENANT_ID__"
+  },
+  "serviceResourceGroupDefinitions": [
+    {
+      "name": "PMCPublish",
+      "azureResourceGroupName": "PMCPublish",
+      "subscriptionKey": "__SUBSCRIPTION_ID__",
+      "scopeTags": [
+        { "name": "ScopeBindings.General" }
+      ],
+      "serviceResourceDefinitions": [
+        {
+          "name": "PMC.Shell",
+          "composedOf": {
+            "extension": {
+              "rolloutParametersPath": "Parameters/RolloutParameters.ShellExt.json",
+              "shell": [
+                {
+                  "type": "azl3",
+                  "properties": {
+                    "imageName": "adm-azurelinux-30-l",
+                    "imageVersion": "v2"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

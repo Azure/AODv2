@@ -1,0 +1,462 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: OneBranch.Pipelines/GovernedTemplates
+      ref: refs/heads/main
+
+variables:
+  - group: AODv2-Publishing
+
+extends:
+  template: v2/OneBranch.Official.CrossPlat.yml@templates
+  parameters:
+    globalSdl:
+      tsa:
+        enabled: false
+      codeql:
+        compiled:
+          enabled: false
+    stages:
+      - stage: PrepareVersion
+        displayName: Reserve package version
+        jobs:
+          - job: Prepare
+            pool:
+              type: linux
+              isCustom: true
+              name: azfilesauth-1es-pool
+              demands:
+                - ImageOverride -equals azfilesauth-1es-ubuntu24
+            steps:
+              - checkout: self
+                clean: true
+                fetchDepth: 0
+                persistCredentials: true
+                displayName: Checkout version source
+              - bash: |
+                  set -euo pipefail
+
+                  source_commit="$(git rev-parse HEAD)"
+                  version="$(make --no-print-directory print-version)"
+
+                  if [[ '$(Build.Reason)' != PullRequest && \
+                        '$(Build.SourceBranch)' == refs/heads/main ]]; then
+                    git config user.name 'AODv2 Build Pipeline'
+                    git config user.email 'aodv2-build@microsoft.com'
+
+                    for attempt in {1..5}; do
+                      git fetch origin main
+                      git checkout -B pipeline-version origin/main
+                      version="$(python3 tools/bump_version.py)"
+                      git add pyproject.toml
+                      git commit -m "build: bump package version to $version [skip ci]"
+
+                      if git push origin HEAD:refs/heads/main; then
+                        source_commit="$(git rev-parse HEAD)"
+                        break
+                      fi
+
+                      if [[ "$attempt" -eq 5 ]]; then
+                        echo 'failed to reserve a package version after 5 attempts' >&2
+                        exit 1
+                      fi
+                    done
+                  fi
+
+                  echo "Reserved AODv2 package version $version-1 at $source_commit"
+                  echo "##vso[task.setvariable variable=sourceCommit;isOutput=true]$source_commit"
+                  echo "##vso[task.setvariable variable=packageVersion;isOutput=true]$version"
+                  echo "##vso[build.updatebuildnumber]aodv2-$version-$(Build.BuildId)"
+                name: setVersion
+                displayName: Increment and reserve patch version
+
+      - stage: Validate
+        displayName: Validate source and tests
+        dependsOn: PrepareVersion
+        variables:
+          preparedCommit: $[ stageDependencies.PrepareVersion.Prepare.outputs['setVersion.sourceCommit'] ]
+        jobs:
+          - job: Validate
+            pool:
+              type: linux
+              isCustom: true
+              name: azfilesauth-1es-pool
+              demands:
+                - ImageOverride -equals azfilesauth-1es-ubuntu24
+            steps:
+              - checkout: self
+                clean: true
+                submodules: recursive
+                displayName: Checkout repository and submodules
+              - bash: |
+                  set -euo pipefail
+                  git fetch origin main
+                  git checkout --detach '$(preparedCommit)'
+                  git submodule update --init --recursive
+                  test -n "$(make --no-print-directory print-version)"
+                  bash -n package-deb.sh package-rpm.sh test/package_builds/validate-package.sh
+                  python3 -m venv .pipeline-venv
+                  .pipeline-venv/bin/pip install -e '.[dev]'
+                  PYTHONPATH=.:src .pipeline-venv/bin/pytest -m 'not slow' \
+                    --junitxml='$(Common.TestResultsDirectory)/pytest.xml'
+                displayName: Validate version source and run tests
+              - task: PublishTestResults@2
+                condition: succeededOrFailed()
+                inputs:
+                  testResultsFormat: JUnit
+                  testResultsFiles: '$(Common.TestResultsDirectory)/pytest.xml'
+                  testRunTitle: AODv2 unit tests
+
+      - stage: BuildPackages
+        displayName: Build and install-test packages
+        dependsOn:
+          - PrepareVersion
+          - Validate
+        condition: succeeded('Validate')
+        variables:
+          preparedCommit: $[ stageDependencies.PrepareVersion.Prepare.outputs['setVersion.sourceCommit'] ]
+        jobs:
+          - job: BuildDEB
+            displayName: Build DEB
+            strategy:
+              matrix:
+                Ubuntu22:
+                  imageName: azfilesauth-1es-ubuntu22
+                  releaseName: jammy
+                Ubuntu24:
+                  imageName: azfilesauth-1es-ubuntu24
+                  releaseName: noble
+            variables:
+              ob_artifactSuffix: $(imageName)
+            pool:
+              type: linux
+              isCustom: true
+              name: azfilesauth-1es-pool
+              demands:
+                - ImageOverride -equals $(imageName)
+            steps:
+              - checkout: self
+                clean: true
+                submodules: recursive
+                displayName: Checkout repository and submodules
+              - bash: |
+                  set -euo pipefail
+                  git fetch origin main
+                  git checkout --detach '$(preparedCommit)'
+                  git submodule update --init --recursive
+                  ./package-deb.sh '$(releaseName)'
+                  sudo ./test/package_builds/validate-package.sh PACKAGES/deb/'$(releaseName)'/*.deb
+                  cp -a PACKAGES/deb/'$(releaseName)'/. '$(Build.ArtifactStagingDirectory)/'
+                displayName: Build and validate DEB
+              - task: PublishPipelineArtifact@1
+                inputs:
+                  targetPath: '$(Build.ArtifactStagingDirectory)'
+                  artifact: drop_BuildPackages_BuildDEB$(imageName)
+
+          - job: BuildRPM
+            displayName: Build RPM
+            strategy:
+              matrix:
+                AzureLinux3:
+                  imageName: azfilesauth-1es-azlinux3
+                  distro: azl3
+                RHEL9:
+                  imageName: azfilesauth-1es-rhel96
+                  distro: el9
+                RHEL10:
+                  imageName: azfilesauth-1es-rhel10
+                  distro: el10
+                SLES15:
+                  imageName: azfilesauth-1es-sles15-sp7
+                  distro: sles15
+            variables:
+              ob_artifactSuffix: $(imageName)
+            pool:
+              type: linux
+              isCustom: true
+              name: azfilesauth-1es-pool
+              demands:
+                - ImageOverride -equals $(imageName)
+            steps:
+              - checkout: self
+                clean: true
+                submodules: recursive
+                displayName: Checkout repository and submodules
+              - bash: |
+                  set -euo pipefail
+                  git fetch origin main
+                  git checkout --detach '$(preparedCommit)'
+                  git submodule update --init --recursive
+                  ./package-rpm.sh '$(distro)'
+                  sudo ./test/package_builds/validate-package.sh PACKAGES/rpm/'$(distro)'/*.rpm
+                  cp -a PACKAGES/rpm/'$(distro)'/. '$(Build.ArtifactStagingDirectory)/'
+                displayName: Build and validate RPM
+              - task: PublishPipelineArtifact@1
+                inputs:
+                  targetPath: '$(Build.ArtifactStagingDirectory)'
+                  artifact: drop_BuildPackages_BuildRPM$(imageName)
+
+      - stage: SignArtifacts
+        displayName: ESRP sign packages
+        dependsOn:
+          - PrepareVersion
+          - BuildPackages
+        condition: and(succeeded('BuildPackages'), eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))
+        variables:
+          preparedCommit: $[ stageDependencies.PrepareVersion.Prepare.outputs['setVersion.sourceCommit'] ]
+        jobs:
+          - job: SignArtifacts
+            timeoutInMinutes: 120
+            pool:
+              type: linux
+              isCustom: true
+              name: azfilesauth-prod-1es-pool
+              demands:
+                - ImageOverride -equals azfilesauth-prod-1es-ubuntu22-image
+            steps:
+              - checkout: self
+                clean: true
+                submodules: recursive
+                displayName: Checkout provenance source
+              - bash: |
+                  set -euo pipefail
+                  git fetch origin main
+                  git checkout --detach '$(preparedCommit)'
+                  git submodule update --init --recursive
+                displayName: Checkout reserved version commit
+              - task: DownloadPipelineArtifact@2
+                inputs:
+                  source: current
+                  patterns: drop_BuildPackages_BuildDEB*/**
+                  path: '$(Build.ArtifactStagingDirectory)/unsigned'
+                displayName: Download DEB artifacts
+              - task: DownloadPipelineArtifact@2
+                inputs:
+                  source: current
+                  patterns: drop_BuildPackages_BuildRPM*/**
+                  path: '$(Build.ArtifactStagingDirectory)/unsigned'
+                displayName: Download RPM artifacts
+              - bash: |
+                  set -euo pipefail
+                  root='$(Build.ArtifactStagingDirectory)'
+                  mkdir -p "$root/sign/deb-default" "$root/sign/rpm-default" \
+                    "$root/sign/rpm-azl3" "$root/sign/rpm-el10"
+                  find "$root/unsigned" -type f -name '*.deb' -exec cp {} "$root/sign/deb-default/" \;
+                  find "$root/unsigned" -type f -name '*.azl3.x86_64.rpm' -exec cp {} "$root/sign/rpm-azl3/" \;
+                  find "$root/unsigned" -type f -name '*.el10.x86_64.rpm' -exec cp {} "$root/sign/rpm-el10/" \;
+                  find "$root/unsigned" -type f \( -name '*.el9.x86_64.rpm' -o -name '*.sles15.x86_64.rpm' \) \
+                    -exec cp {} "$root/sign/rpm-default/" \;
+                  test "$(find "$root/sign" -type f \( -name '*.deb' -o -name '*.rpm' \) | wc -l)" -eq 6
+                  test "$(find "$root/sign/deb-default" -name '*.deb' | wc -l)" -eq 2
+                  test "$(find "$root/sign/rpm-default" -name '*.rpm' | wc -l)" -eq 2
+                  test "$(find "$root/sign/rpm-azl3" -name '*.rpm' | wc -l)" -eq 1
+                  test "$(find "$root/sign/rpm-el10" -name '*.rpm' | wc -l)" -eq 1
+                displayName: Route packages to signing profiles
+              - task: EsrpCodeSigning@5
+                displayName: Sign DEBs
+                inputs:
+                  ConnectedServiceName: '$(SigningServiceConnection)'
+                  AppRegistrationClientId: '$(AppRegistrationClientId)'
+                  AppRegistrationTenantId: '$(AppRegistrationTenantId)'
+                  EsrpClientId: '$(AppRegistrationClientId)'
+                  UseMSIAuthentication: true
+                  AuthAKVName: '$(AuthAKVName)'
+                  AuthSignCertName: '$(AuthSignCertName)'
+                  FolderPath: '$(Build.ArtifactStagingDirectory)/sign/deb-default'
+                  Pattern: '*.deb'
+                  signConfigType: inlineSignParams
+                  inlineOperation: |
+                    [{"KeyCode":"$(DebSigningProfile)","OperationCode":"LinuxSign","ToolName":"sign","ToolVersion":"1.0","Parameters":{}}]
+                  SessionTimeout: '90'
+                  MaxConcurrency: '25'
+                  MaxRetryAttempts: '5'
+              - task: EsrpCodeSigning@5
+                displayName: Sign default RPMs
+                inputs:
+                  ConnectedServiceName: '$(SigningServiceConnection)'
+                  AppRegistrationClientId: '$(AppRegistrationClientId)'
+                  AppRegistrationTenantId: '$(AppRegistrationTenantId)'
+                  EsrpClientId: '$(AppRegistrationClientId)'
+                  UseMSIAuthentication: true
+                  AuthAKVName: '$(AuthAKVName)'
+                  AuthSignCertName: '$(AuthSignCertName)'
+                  FolderPath: '$(Build.ArtifactStagingDirectory)/sign/rpm-default'
+                  Pattern: '*.rpm'
+                  signConfigType: inlineSignParams
+                  inlineOperation: |
+                    [{"KeyCode":"$(DefaultRpmSigningProfile)","OperationCode":"LinuxSign","ToolName":"sign","ToolVersion":"1.0","Parameters":{}}]
+                  SessionTimeout: '90'
+                  MaxConcurrency: '25'
+                  MaxRetryAttempts: '5'
+              - task: EsrpCodeSigning@5
+                displayName: Sign Azure Linux 3 RPM
+                inputs:
+                  ConnectedServiceName: '$(SigningServiceConnection)'
+                  AppRegistrationClientId: '$(AppRegistrationClientId)'
+                  AppRegistrationTenantId: '$(AppRegistrationTenantId)'
+                  EsrpClientId: '$(AppRegistrationClientId)'
+                  UseMSIAuthentication: true
+                  AuthAKVName: '$(AuthAKVName)'
+                  AuthSignCertName: '$(AuthSignCertName)'
+                  FolderPath: '$(Build.ArtifactStagingDirectory)/sign/rpm-azl3'
+                  Pattern: '*.rpm'
+                  signConfigType: inlineSignParams
+                  inlineOperation: |
+                    [{"KeyCode":"$(AzureLinuxSigningProfile)","OperationCode":"LinuxSign","ToolName":"sign","ToolVersion":"1.0","Parameters":{}}]
+                  SessionTimeout: '90'
+                  MaxConcurrency: '25'
+                  MaxRetryAttempts: '5'
+              - task: EsrpCodeSigning@5
+                displayName: Sign RHEL 10 RPM
+                inputs:
+                  ConnectedServiceName: '$(SigningServiceConnection)'
+                  AppRegistrationClientId: '$(AppRegistrationClientId)'
+                  AppRegistrationTenantId: '$(AppRegistrationTenantId)'
+                  EsrpClientId: '$(AppRegistrationClientId)'
+                  UseMSIAuthentication: true
+                  AuthAKVName: '$(AuthAKVName)'
+                  AuthSignCertName: '$(AuthSignCertName)'
+                  FolderPath: '$(Build.ArtifactStagingDirectory)/sign/rpm-el10'
+                  Pattern: '*.rpm'
+                  signConfigType: inlineSignParams
+                  inlineOperation: |
+                    [{"KeyCode":"$(Rhel10SigningProfile)","OperationCode":"LinuxSign","ToolName":"sign","ToolVersion":"1.0","Parameters":{}}]
+                  SessionTimeout: '90'
+                  MaxConcurrency: '25'
+                  MaxRetryAttempts: '5'
+              - bash: |
+                  set -euo pipefail
+                  signed='$(Build.ArtifactStagingDirectory)/signed'
+                  mkdir -p "$signed"
+                  find '$(Build.ArtifactStagingDirectory)/sign' -type f \( -name '*.deb' -o -name '*.rpm' \) -exec cp {} "$signed/" \;
+                  test "$(find "$signed" -type f | wc -l)" -eq 6
+                  for package in "$signed"/*.deb; do
+                    dpkg-deb --info "$package" >/dev/null
+                  done
+                  for package in "$signed"/*.rpm; do
+                    rpm --checksig "$package"
+                  done
+                  python3 tools/write_release_manifest.py --package-dir "$signed" --output "$signed/manifest.json"
+                  (cd "$signed" && sha256sum *.deb *.rpm > sha256sums.txt)
+                displayName: Verify and manifest signed packages
+              - task: PublishPipelineArtifact@1
+                inputs:
+                  targetPath: '$(Build.ArtifactStagingDirectory)/signed'
+                  artifact: drop_SignArtifacts_AODv2SignedPackages
+                displayName: Publish signed packages
+
+      - stage: PublishEv2Artifacts
+        displayName: Assemble EV2 artifact
+        dependsOn:
+          - PrepareVersion
+          - SignArtifacts
+        condition: succeeded('SignArtifacts')
+        variables:
+          preparedVersion: $[ stageDependencies.PrepareVersion.Prepare.outputs['setVersion.packageVersion'] ]
+        jobs:
+          - job: BuildEV2Artifacts
+            timeoutInMinutes: 120
+            pool:
+              type: linux
+            variables:
+              ob_outputDirectory: '$(Build.SourcesDirectory)/out'
+              LinuxContainerImage: mcr.microsoft.com/onebranch/azurelinux/build:3.0
+            steps:
+              - task: DownloadPipelineArtifact@2
+                inputs:
+                  source: current
+                  artifact: drop_SignArtifacts_AODv2SignedPackages
+                  path: '$(Build.ArtifactStagingDirectory)/signed'
+                displayName: Download signed packages
+              - task: PipAuthenticate@1
+                inputs:
+                  artifactFeeds: '$(PmcCliFeed)'
+                displayName: Authenticate to PMC CLI feed
+              - task: DownloadSecureFile@1
+                name: settings
+                inputs:
+                  secureFile: '$(PmcSettingsSecureFile)'
+                displayName: Download PMC settings
+              - task: DownloadSecureFile@1
+                name: serviceModel
+                inputs:
+                  secureFile: '$(Ev2ServiceModelSecureFile)'
+                displayName: Download EV2 service model
+              - task: DownloadSecureFile@1
+                name: scopeBindings
+                inputs:
+                  secureFile: '$(Ev2ScopeBindingsSecureFile)'
+                displayName: Download EV2 scope bindings
+              - task: DownloadSecureFile@1
+                name: pmcRequirements
+                inputs:
+                  secureFile: '$(PmcRequirementsSecureFile)'
+                displayName: Download hash-pinned PMC requirements
+              - bash: |
+                  set -euo pipefail
+                  ev2='$(Build.SourcesDirectory)/deploy/EV2_PMC/ServiceGroupRoot'
+                  shell_ext="$ev2/Packages/ShellExt"
+                  signed='$(Build.ArtifactStagingDirectory)/signed'
+
+                  cp '$(serviceModel.secureFilePath)' "$ev2/ServiceModel.Prod.json"
+                  cp '$(scopeBindings.secureFilePath)' "$ev2/ScopeBindings.Prod.json"
+                  cp '$(settings.secureFilePath)' "$shell_ext/settings.toml"
+                  version='$(preparedVersion)'
+                  build_id='$(Build.BuildId)'
+                  [[ "$build_id" =~ ^[0-9]+$ ]]
+                  printf '%s.%s\n' "$version" "$build_id" > "$ev2/version.txt"
+
+                  rm -rf "$shell_ext/packages" "$shell_ext/python_dl"
+                  mkdir -p "$shell_ext/packages" "$shell_ext/python_dl"
+                  cp "$signed"/*.deb "$signed"/*.rpm "$shell_ext/packages/"
+                  cp "$signed/manifest.json" "$signed/sha256sums.txt" "$shell_ext/"
+                  python3 -m pip download --require-hashes \
+                    --requirement '$(pmcRequirements.secureFilePath)' \
+                    --dest "$shell_ext/python_dl"
+                  test -n "$(find "$shell_ext/python_dl" -maxdepth 1 -name '*.whl' -print -quit)"
+                  ! grep -Eq '__[A-Z0-9_]+__' "$ev2/ServiceModel.Prod.json" "$ev2/ScopeBindings.Prod.json"
+                  python3 - "$ev2" <<'PY'
+                  import json
+                  import re
+                  import sys
+                  from pathlib import Path
+
+                  root = Path(sys.argv[1])
+                  parameters = (root / 'Parameters/RolloutParameters.ShellExt.json').read_text()
+                  bindings = json.loads((root / 'ScopeBindings.Prod.json').read_text())
+                  covered = {
+                      binding['find']
+                      for scope in bindings['scopeBindings']
+                      for binding in scope['bindings']
+                  }
+                  required = set(re.findall(r'__[A-Z0-9_]+__', parameters))
+                  missing = sorted(required - covered)
+                  if missing:
+                      raise SystemExit(f'missing scope bindings for: {", ".join(missing)}')
+                  PY
+
+                  (
+                    cd "$shell_ext"
+                    tar -cf pmc_packages.tar start.sh settings.toml manifest.json \
+                      sha256sums.txt packages python_dl
+                    tar -tf pmc_packages.tar | sort
+                  )
+                  mkdir -p '$(ob_outputDirectory)'
+                  cp -a "$ev2" '$(ob_outputDirectory)/ServiceGroupRoot'
+                displayName: Assemble immutable EV2 bundle
+              - task: PublishPipelineArtifact@1
+                inputs:
+                  targetPath: '$(ob_outputDirectory)/ServiceGroupRoot'
+                  artifact: drop_PublishEv2Artifacts_AODv2EV2
+                displayName: Publish EV2 artifact

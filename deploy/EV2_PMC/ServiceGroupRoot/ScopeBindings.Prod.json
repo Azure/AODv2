@@ -1,0 +1,19 @@
+{
+  "$schema": "https://ev2schema.azure.net/schemas/2020-01-01/scopeBindings.json",
+  "scopeBindings": [
+    {
+      "scopeTagName": "ScopeBindings.General",
+      "bindings": [
+        { "find": "__SERVICE_TREE_ID__", "replaceWith": "__SERVICE_TREE_ID__" },
+        { "find": "__SERVICE_GROUP_NAME__", "replaceWith": "__SERVICE_GROUP_NAME__" },
+        { "find": "__ENVIRONMENT__", "replaceWith": "prod" },
+        { "find": "__TENANT_ID__", "replaceWith": "__TENANT_ID__" },
+        { "find": "__SUBSCRIPTION_ID__", "replaceWith": "__SUBSCRIPTION_ID__" },
+        { "find": "__PMC_MSI_RG__", "replaceWith": "__PMC_MSI_RG__" },
+        { "find": "__PMC_MSI_NAME__", "replaceWith": "__PMC_MSI_NAME__" },
+        { "find": "__PMC_VNET_NAME__", "replaceWith": "__PMC_VNET_NAME__" },
+        { "find": "__PMC_SUBNET_NAME__", "replaceWith": "__PMC_SUBNET_NAME__" }
+      ]
+    }
+  ]
+}

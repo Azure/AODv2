@@ -1,0 +1,108 @@
+trigger: none
+pr: none
+
+parameters:
+  - name: operation
+    displayName: PMC operation
+    type: string
+    default: publish
+    values:
+      - publish
+      - rollback
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: OneBranch.Pipelines/GovernedTemplates
+      ref: refs/heads/main
+  pipelines:
+    - pipeline: aodv2Build
+      source: aodv2-build
+      project: One
+      trigger: none
+
+extends:
+  template: v2/OneBranch.Official.CrossPlat.yml@templates
+  parameters:
+    ev2ManagedSdpRolloutConfig:
+      rolloutType: normal
+      overrideManagedValidationDuration: false
+      managedValidationOverrideDurationInHours: 0
+      icmIncidentId: 0
+    stages:
+      - stage: Preflight
+        displayName: Validate selected build in PMC
+        jobs:
+          - job: Preflight
+            pool:
+              type: release
+            steps:
+              - download: aodv2Build
+                artifact: drop_PublishEv2Artifacts_AODv2EV2
+              - task: vsrm-ev2.ev2-rollout.ev2-rollout-task.Ev2RARollout@2
+                inputs:
+                  EndpointProviderType: ApprovalService
+                  ApprovalServiceEnvironment: Production
+                  TaskAction: RegisterAndRollout
+                  SkipRegistrationIfExists: true
+                  RolloutType: normal
+                  ServiceRootPath: '$(Pipeline.Workspace)/aodv2Build/drop_PublishEv2Artifacts_AODv2EV2/ServiceGroupRoot'
+                  RolloutSpecPath: '$(Pipeline.Workspace)/aodv2Build/drop_PublishEv2Artifacts_AODv2EV2/ServiceGroupRoot/RolloutSpec.Test.json'
+                  StageMapName: Microsoft.Azure.SDP.Standard
+                  Select: regions(eastus)
+                  ForceRegistration: true
+
+      - ${{ if eq(parameters.operation, 'publish') }}:
+        - stage: ProdDeploy
+          displayName: Publish selected build to PMC
+          dependsOn: Preflight
+          condition: succeeded('Preflight')
+          variables:
+            ob_release_environment: Production
+          jobs:
+            - job: ReleaseJob
+              pool:
+                type: release
+              steps:
+                - download: aodv2Build
+                  artifact: drop_PublishEv2Artifacts_AODv2EV2
+                - task: vsrm-ev2.ev2-rollout.ev2-rollout-task.Ev2RARollout@2
+                  inputs:
+                    EndpointProviderType: ApprovalService
+                    ApprovalServiceEnvironment: Production
+                    TaskAction: RegisterAndRollout
+                    SkipRegistrationIfExists: true
+                    RolloutType: normal
+                    ServiceRootPath: '$(Pipeline.Workspace)/aodv2Build/drop_PublishEv2Artifacts_AODv2EV2/ServiceGroupRoot'
+                    RolloutSpecPath: '$(Pipeline.Workspace)/aodv2Build/drop_PublishEv2Artifacts_AODv2EV2/ServiceGroupRoot/RolloutSpec.Prod.json'
+                    StageMapName: Microsoft.Azure.SDP.Standard
+                    Select: regions(eastus)
+                    ForceRegistration: true
+
+      - ${{ if eq(parameters.operation, 'rollback') }}:
+        - stage: ProdRollback
+          displayName: Remove selected build from PMC repositories
+          dependsOn: Preflight
+          condition: succeeded('Preflight')
+          variables:
+            ob_release_environment: Production
+          jobs:
+            - job: RollbackJob
+              pool:
+                type: release
+              steps:
+                - download: aodv2Build
+                  artifact: drop_PublishEv2Artifacts_AODv2EV2
+                - task: vsrm-ev2.ev2-rollout.ev2-rollout-task.Ev2RARollout@2
+                  inputs:
+                    EndpointProviderType: ApprovalService
+                    ApprovalServiceEnvironment: Production
+                    TaskAction: RegisterAndRollout
+                    SkipRegistrationIfExists: true
+                    RolloutType: normal
+                    ServiceRootPath: '$(Pipeline.Workspace)/aodv2Build/drop_PublishEv2Artifacts_AODv2EV2/ServiceGroupRoot'
+                    RolloutSpecPath: '$(Pipeline.Workspace)/aodv2Build/drop_PublishEv2Artifacts_AODv2EV2/ServiceGroupRoot/RollbackSpec.Prod.json'
+                    StageMapName: Microsoft.Azure.SDP.Standard
+                    Select: regions(eastus)
+                    ForceRegistration: true

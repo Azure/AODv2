@@ -2,7 +2,7 @@
 
 SHELL := /bin/bash
 
-.PHONY: build install-bins rpm deb prep rpm_prep deb_prep clean cleanbins deps
+.PHONY: build install-bins rpm deb prep rpm_prep deb_prep clean cleanbins deps print-version
 default: build install-bins rpm deb
 
 RPMBUILD := $(CURDIR)/rpmbuild
@@ -12,7 +12,12 @@ LOCALRPMS:=./rpms
 LOCALDEBS:=./debs
 SRCDIR:=./
 PKGNAME:=aodv2
-VERSION:=0.1.0
+VERSION := $(shell python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+PACKAGE_RELEASE := 1
+RPM_DIST ?=
+
+print-version:
+	@echo $(VERSION)
 
 build:
 	$(MAKE) -C monitoring_tools
@@ -48,9 +53,11 @@ ${TMPLOCAL}/$(PKGNAME)-$(VERSION).tar.gz: prep install-bins deps ${SRCDIR}/src/C
 rpm_prep: ${TMPLOCAL}/$(PKGNAME)-$(VERSION).tar.gz rpm_prep_dirs
 	cp ${TMPLOCAL}/$(PKGNAME)-$(VERSION).tar.gz ${RPMBUILD}/SOURCES/
 	cp ${SRCDIR}/packages/rpm/aodv2.spec ${RPMBUILD}/SPECS/
-	
+
 rpm: rpm_prep
-	rpmbuild -ba ${RPMBUILD}/SPECS/aodv2.spec --define "_topdir ${RPMBUILD}"
+	rpmbuild -ba ${RPMBUILD}/SPECS/aodv2.spec --define "_topdir ${RPMBUILD}" \
+		--define "aod_version $(VERSION)" --define "aod_release $(PACKAGE_RELEASE)" \
+		$(if $(RPM_DIST),--define "dist $(RPM_DIST)")
 	mv ${RPMBUILD}/RPMS/x86_64/*.rpm ${LOCALRPMS}/
 	sha256sum ${LOCALRPMS}/*.rpm > ${LOCALRPMS}/sha256sums.txt
 
@@ -58,6 +65,10 @@ deb_prep: ${TMPLOCAL}/$(PKGNAME)-$(VERSION).tar.gz deb_prep_dirs
 	rm -rf ${DEBBUILD}/$(PKGNAME)-$(VERSION)
 	tar -xzf ${TMPLOCAL}/$(PKGNAME)-$(VERSION).tar.gz -C ${DEBBUILD}
 	cp -a ${SRCDIR}/packages/debian ${DEBBUILD}/$(PKGNAME)-$(VERSION)/debian
+	sed -e 's/@VERSION@/$(VERSION)/g' -e 's/@RELEASE@/$(PACKAGE_RELEASE)/g' \
+		${SRCDIR}/packages/debian/changelog.in > \
+		${DEBBUILD}/$(PKGNAME)-$(VERSION)/debian/changelog
+	rm ${DEBBUILD}/$(PKGNAME)-$(VERSION)/debian/changelog.in
 	cp ${SRCDIR}/aodv2.service ${DEBBUILD}/$(PKGNAME)-$(VERSION)/debian/aodv2.service
 
 deb: deb_prep

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://ev2schema.azure.net/schemas/2020-04-01/RegionAgnosticRolloutSpecification.json",
+  "contentVersion": "1.0.0",
+  "rolloutMetadata": {
+    "serviceModelPath": "ServiceModel.Prod.json",
+    "scopeBindingsPath": "ScopeBindings.Prod.json",
+    "name": "Microsoft.Azure.Storage.AODv2.PMC.Rollback",
+    "rolloutType": "Hotfix",
+    "buildSource": {
+      "parameters": {
+        "versionFile": "version.txt"
+      }
+    }
+  },
+  "orchestratedSteps": [
+    {
+      "name": "PMC.Rollback",
+      "targetType": "ServiceResourceDefinition",
+      "targetName": "PMC.Shell",
+      "actions": ["shell/PMCRollback"]
+    }
+  ]
+}
