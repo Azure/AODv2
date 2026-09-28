@@ -3,30 +3,23 @@ trigger:
     include:
       - main
 
-pr:
-  branches:
-    include:
-      - main
+pr: none
 
 resources:
   repositories:
-    - repository: templates
+    - repository: 1ESPipelineTemplates
       type: git
-      name: OneBranch.Pipelines/GovernedTemplates
-      ref: refs/heads/main
+      name: 1ESPipelineTemplates/1ESPipelineTemplates
+      ref: refs/tags/release
 
 variables:
   - group: AODv2-Publishing
 
 extends:
-  template: v2/OneBranch.Official.CrossPlat.yml@templates
+  template: v1/1ES.Official.PipelineTemplate.yml@1ESPipelineTemplates
   parameters:
-    globalSdl:
-      tsa:
-        enabled: false
-      codeql:
-        compiled:
-          enabled: false
+    customBuildTags:
+      - 1ES.PT.ViaStartRight
     stages:
       - stage: PrepareVersion
         displayName: Reserve package version
@@ -137,14 +130,17 @@ extends:
                 Ubuntu24:
                   imageName: azfilesauth-1es-ubuntu24
                   releaseName: noble
-            variables:
-              ob_artifactSuffix: $(imageName)
             pool:
               type: linux
               isCustom: true
               name: azfilesauth-1es-pool
               demands:
                 - ImageOverride -equals $(imageName)
+            templateContext:
+              outputs:
+                - output: pipelineArtifact
+                  targetPath: '$(Build.ArtifactStagingDirectory)'
+                  artifactName: drop_BuildPackages_BuildDEB$(imageName)
             steps:
               - checkout: self
                 clean: true
@@ -159,11 +155,6 @@ extends:
                   sudo ./test/package_builds/validate-package.sh PACKAGES/deb/'$(releaseName)'/*.deb
                   cp -a PACKAGES/deb/'$(releaseName)'/. '$(Build.ArtifactStagingDirectory)/'
                 displayName: Build and validate DEB
-              - task: PublishPipelineArtifact@1
-                inputs:
-                  targetPath: '$(Build.ArtifactStagingDirectory)'
-                  artifact: drop_BuildPackages_BuildDEB$(imageName)
-
           - job: BuildRPM
             displayName: Build RPM
             strategy:
@@ -180,14 +171,17 @@ extends:
                 SLES15:
                   imageName: azfilesauth-1es-sles15-sp7
                   distro: sles15
-            variables:
-              ob_artifactSuffix: $(imageName)
             pool:
               type: linux
               isCustom: true
               name: azfilesauth-1es-pool
               demands:
                 - ImageOverride -equals $(imageName)
+            templateContext:
+              outputs:
+                - output: pipelineArtifact
+                  targetPath: '$(Build.ArtifactStagingDirectory)'
+                  artifactName: drop_BuildPackages_BuildRPM$(imageName)
             steps:
               - checkout: self
                 clean: true
@@ -202,11 +196,6 @@ extends:
                   sudo ./test/package_builds/validate-package.sh PACKAGES/rpm/'$(distro)'/*.rpm
                   cp -a PACKAGES/rpm/'$(distro)'/. '$(Build.ArtifactStagingDirectory)/'
                 displayName: Build and validate RPM
-              - task: PublishPipelineArtifact@1
-                inputs:
-                  targetPath: '$(Build.ArtifactStagingDirectory)'
-                  artifact: drop_BuildPackages_BuildRPM$(imageName)
-
       - stage: SignArtifacts
         displayName: ESRP sign packages
         dependsOn:
@@ -224,6 +213,11 @@ extends:
               name: azfilesauth-prod-1es-pool
               demands:
                 - ImageOverride -equals azfilesauth-prod-1es-ubuntu22-image
+            templateContext:
+              outputs:
+                - output: pipelineArtifact
+                  targetPath: '$(Build.ArtifactStagingDirectory)/signed'
+                  artifactName: drop_SignArtifacts_AODv2SignedPackages
             steps:
               - checkout: self
                 clean: true
@@ -350,12 +344,6 @@ extends:
                   python3 tools/write_release_manifest.py --package-dir "$signed" --output "$signed/manifest.json"
                   (cd "$signed" && sha256sum *.deb *.rpm > sha256sums.txt)
                 displayName: Verify and manifest signed packages
-              - task: PublishPipelineArtifact@1
-                inputs:
-                  targetPath: '$(Build.ArtifactStagingDirectory)/signed'
-                  artifact: drop_SignArtifacts_AODv2SignedPackages
-                displayName: Publish signed packages
-
       - stage: PublishEv2Artifacts
         displayName: Assemble EV2 artifact
         dependsOn:
@@ -369,9 +357,15 @@ extends:
             timeoutInMinutes: 120
             pool:
               type: linux
-            variables:
-              ob_outputDirectory: '$(Build.SourcesDirectory)/out'
-              LinuxContainerImage: mcr.microsoft.com/onebranch/azurelinux/build:3.0
+              isCustom: true
+              name: azfilesauth-1es-pool
+              demands:
+                - ImageOverride -equals azfilesauth-1es-ubuntu24
+            templateContext:
+              outputs:
+                - output: pipelineArtifact
+                  targetPath: '$(Build.SourcesDirectory)/out'
+                  artifactName: drop_PublishEv2Artifacts_AODv2EV2
             steps:
               - task: DownloadPipelineArtifact@2
                 inputs:
@@ -452,11 +446,6 @@ extends:
                       sha256sums.txt packages python_dl
                     tar -tf pmc_packages.tar | sort
                   )
-                  mkdir -p '$(ob_outputDirectory)'
-                  cp -a "$ev2" '$(ob_outputDirectory)/ServiceGroupRoot'
+                  mkdir -p '$(Build.SourcesDirectory)/out'
+                  cp -a "$ev2" '$(Build.SourcesDirectory)/out/ServiceGroupRoot'
                 displayName: Assemble immutable EV2 bundle
-              - task: PublishPipelineArtifact@1
-                inputs:
-                  targetPath: '$(ob_outputDirectory)/ServiceGroupRoot'
-                  artifact: drop_PublishEv2Artifacts_AODv2EV2
-                displayName: Publish EV2 artifact
