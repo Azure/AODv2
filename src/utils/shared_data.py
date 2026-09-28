@@ -1,0 +1,277 @@
+"""Data shared between multiple aod componenets."""
+
+import ctypes
+import errno
+from types import MappingProxyType
+import numpy as np
+
+TASK_COMM_LEN = 16
+RINGBUF_PINNED = b"/sys/fs/bpf/aodrb"
+
+# Upper bound on records the kernel ringbuf can hold at once.
+# Kernel ringbuf is MAX_ENTRIES * 4096 = 8 MiB (see aod_diag.h); each record
+# costs 8 B header + roundup_8(sizeof(struct event)=48) = 56 B.
+# Sizing the consumer scratch to this value lets us do single-poll without
+# fearing overflow
+RB_MAX_RECORDS = (2048 * 4096) // 56  # 149797
+
+MAX_WAIT = 0.005  # 5 ms, used in anomaly watcher
+
+ALL_SMB_CMDS = MappingProxyType(
+    {
+        "SMB2_NEGOTIATE": 0,
+        "SMB2_SESSION_SETUP": 1,
+        "SMB2_LOGOFF": 2,
+        "SMB2_TREE_CONNECT": 3,
+        "SMB2_TREE_DISCONNECT": 4,
+        "SMB2_CREATE": 5,
+        "SMB2_CLOSE": 6,
+        "SMB2_FLUSH": 7,
+        "SMB2_READ": 8,
+        "SMB2_WRITE": 9,
+        "SMB2_LOCK": 10,
+        "SMB2_IOCTL": 11,
+        "SMB2_CANCEL": 12,
+        "SMB2_ECHO": 13,
+        "SMB2_QUERY_DIRECTORY": 14,
+        "SMB2_CHANGE_NOTIFY": 15,
+        "SMB2_QUERY_INFO": 16,
+        "SMB2_SET_INFO": 17,
+        "SMB2_OPLOCK_BREAK": 18,
+        "SMB2_SERVER_TO_CLIENT_NOTIFICATION": 19,
+    }
+)
+
+
+ALL_NFS_CMDS = MappingProxyType(
+    {
+        "NFSPROC4_CLNT_NULL": 0,
+        "NFSPROC4_CLNT_READ": 1,
+        "NFSPROC4_CLNT_WRITE": 2,
+        "NFSPROC4_CLNT_COMMIT": 3,
+        "NFSPROC4_CLNT_OPEN": 4,
+        "NFSPROC4_CLNT_OPEN_CONFIRM": 5,
+        "NFSPROC4_CLNT_OPEN_NOATTR": 6,
+        "NFSPROC4_CLNT_OPEN_DOWNGRADE": 7,
+        "NFSPROC4_CLNT_CLOSE": 8,
+        "NFSPROC4_CLNT_SETATTR": 9,
+        "NFSPROC4_CLNT_FSINFO": 10,
+        "NFSPROC4_CLNT_RENEW": 11,
+        "NFSPROC4_CLNT_SETCLIENTID": 12,
+        "NFSPROC4_CLNT_SETCLIENTID_CONFIRM": 13,
+        "NFSPROC4_CLNT_LOCK": 14,
+        "NFSPROC4_CLNT_LOCKT": 15,
+        "NFSPROC4_CLNT_LOCKU": 16,
+        "NFSPROC4_CLNT_ACCESS": 17,
+        "NFSPROC4_CLNT_GETATTR": 18,
+        "NFSPROC4_CLNT_LOOKUP": 19,
+        "NFSPROC4_CLNT_LOOKUP_ROOT": 20,
+        "NFSPROC4_CLNT_REMOVE": 21,
+        "NFSPROC4_CLNT_RENAME": 22,
+        "NFSPROC4_CLNT_LINK": 23,
+        "NFSPROC4_CLNT_SYMLINK": 24,
+        "NFSPROC4_CLNT_CREATE": 25,
+        "NFSPROC4_CLNT_PATHCONF": 26,
+        "NFSPROC4_CLNT_STATFS": 27,
+        "NFSPROC4_CLNT_READLINK": 28,
+        "NFSPROC4_CLNT_READDIR": 29,
+        "NFSPROC4_CLNT_SERVER_CAPS": 30,
+        "NFSPROC4_CLNT_DELEGRETURN": 31,
+        "NFSPROC4_CLNT_GETACL": 32,
+        "NFSPROC4_CLNT_SETACL": 33,
+        "NFSPROC4_CLNT_FS_LOCATIONS": 34,
+        "NFSPROC4_CLNT_RELEASE_LOCKOWNER": 35,
+        "NFSPROC4_CLNT_SECINFO": 36,
+        "NFSPROC4_CLNT_FSID_PRESENT": 37,
+        "NFSPROC4_CLNT_EXCHANGE_ID": 38,
+        "NFSPROC4_CLNT_CREATE_SESSION": 39,
+        "NFSPROC4_CLNT_DESTROY_SESSION": 40,
+        "NFSPROC4_CLNT_SEQUENCE": 41,
+        "NFSPROC4_CLNT_GET_LEASE_TIME": 42,
+        "NFSPROC4_CLNT_RECLAIM_COMPLETE": 43,
+        "NFSPROC4_CLNT_LAYOUTGET": 44,
+        "NFSPROC4_CLNT_GETDEVICEINFO": 45,
+        "NFSPROC4_CLNT_LAYOUTCOMMIT": 46,
+        "NFSPROC4_CLNT_LAYOUTRETURN": 47,
+        "NFSPROC4_CLNT_SECINFO_NO_NAME": 48,
+        "NFSPROC4_CLNT_TEST_STATEID": 49,
+        "NFSPROC4_CLNT_FREE_STATEID": 50,
+        "NFSPROC4_CLNT_GETDEVICELIST": 51,
+        "NFSPROC4_CLNT_BIND_CONN_TO_SESSION": 52,
+        "NFSPROC4_CLNT_DESTROY_CLIENTID": 53,
+        "NFSPROC4_CLNT_SEEK": 54,
+        "NFSPROC4_CLNT_ALLOCATE": 55,
+        "NFSPROC4_CLNT_DEALLOCATE": 56,
+        "NFSPROC4_CLNT_LAYOUTSTATS": 57,
+        "NFSPROC4_CLNT_CLONE": 58,
+        "NFSPROC4_CLNT_COPY": 59,
+        "NFSPROC4_CLNT_OFFLOAD_CANCEL": 60,
+        "NFSPROC4_CLNT_LOOKUPP": 61,
+        "NFSPROC4_CLNT_LAYOUTERROR": 62,
+        "NFSPROC4_CLNT_COPY_NOTIFY": 63,
+        "NFSPROC4_CLNT_GETXATTR": 64,
+        "NFSPROC4_CLNT_SETXATTR": 65,
+        "NFSPROC4_CLNT_LISTXATTRS": 66,
+        "NFSPROC4_CLNT_REMOVEXATTR": 67,
+        "NFSPROC4_CLNT_READ_PLUS": 68,
+    }
+)
+
+ALL_NFS_ERRS = MappingProxyType(
+    {
+        "NFS4ERR_PERM": 1,
+        "NFS4ERR_NOENT": 2,
+        "NFS4ERR_IO": 5,
+        "NFS4ERR_NXIO": 6,
+        "NFS4ERR_ACCESS": 13,
+        "NFS4ERR_EXIST": 17,
+        "NFS4ERR_XDEV": 18,
+        "NFS4ERR_NOTDIR": 20,
+        "NFS4ERR_ISDIR": 21,
+        "NFS4ERR_INVAL": 22,
+        "NFS4ERR_FBIG": 27,
+        "NFS4ERR_NOSPC": 28,
+        "NFS4ERR_ROFS": 30,
+        "NFS4ERR_MLINK": 31,
+        "NFS4ERR_NAMETOOLONG": 63,
+        "NFS4ERR_NOTEMPTY": 66,
+        "NFS4ERR_DQUOT": 69,
+        "NFS4ERR_STALE": 70,
+        "NFS4ERR_BADHANDLE": 10001,
+        "NFS4ERR_BAD_COOKIE": 10003,
+        "NFS4ERR_NOTSUPP": 10004,
+        "NFS4ERR_TOOSMALL": 10005,
+        "NFS4ERR_SERVERFAULT": 10006,
+        "NFS4ERR_BADTYPE": 10007,
+        "NFS4ERR_DELAY": 10008,
+        "NFS4ERR_SAME": 10009,
+        "NFS4ERR_DENIED": 10010,
+        "NFS4ERR_EXPIRED": 10011,
+        "NFS4ERR_LOCKED": 10012,
+        "NFS4ERR_GRACE": 10013,
+        "NFS4ERR_FHEXPIRED": 10014,
+        "NFS4ERR_SHARE_DENIED": 10015,
+        "NFS4ERR_WRONGSEC": 10016,
+        "NFS4ERR_CLID_INUSE": 10017,
+        "NFS4ERR_RESOURCE": 10018,
+        "NFS4ERR_MOVED": 10019,
+        "NFS4ERR_NOFILEHANDLE": 10020,
+        "NFS4ERR_MINOR_VERS_MISMATCH": 10021,
+        "NFS4ERR_STALE_CLIENTID": 10022,
+        "NFS4ERR_STALE_STATEID": 10023,
+        "NFS4ERR_OLD_STATEID": 10024,
+        "NFS4ERR_BAD_STATEID": 10025,
+        "NFS4ERR_BAD_SEQID": 10026,
+        "NFS4ERR_NOT_SAME": 10027,
+        "NFS4ERR_LOCK_RANGE": 10028,
+        "NFS4ERR_SYMLINK": 10029,
+        "NFS4ERR_RESTOREFH": 10030,
+        "NFS4ERR_LEASE_MOVED": 10031,
+        "NFS4ERR_ATTRNOTSUPP": 10032,
+        "NFS4ERR_NO_GRACE": 10033,
+        "NFS4ERR_RECLAIM_BAD": 10034,
+        "NFS4ERR_RECLAIM_CONFLICT": 10035,
+        "NFS4ERR_BADXDR": 10036,
+        "NFS4ERR_LOCKS_HELD": 10037,
+        "NFS4ERR_OPENMODE": 10038,
+        "NFS4ERR_BADOWNER": 10039,
+        "NFS4ERR_BADCHAR": 10040,
+        "NFS4ERR_BADNAME": 10041,
+        "NFS4ERR_BAD_RANGE": 10042,
+        "NFS4ERR_LOCK_NOTSUPP": 10043,
+        "NFS4ERR_OP_ILLEGAL": 10044,
+        "NFS4ERR_DEADLOCK": 10045,
+        "NFS4ERR_FILE_OPEN": 10046,
+        "NFS4ERR_ADMIN_REVOKED": 10047,
+        "NFS4ERR_CB_PATH_DOWN": 10048,
+        "NFS4ERR_BADIOMODE": 10049,
+        "NFS4ERR_BADLAYOUT": 10050,
+        "NFS4ERR_BAD_SESSION_DIGEST": 10051,
+        "NFS4ERR_BADSESSION": 10052,
+        "NFS4ERR_BADSLOT": 10053,
+        "NFS4ERR_COMPLETE_ALREADY": 10054,
+        "NFS4ERR_CONN_NOT_BOUND_TO_SESSION": 10055,
+        "NFS4ERR_DELEG_ALREADY_WANTED": 10056,
+        "NFS4ERR_BACK_CHAN_BUSY": 10057,
+        "NFS4ERR_LAYOUTTRYLATER": 10058,
+        "NFS4ERR_LAYOUTUNAVAILABLE": 10059,
+        "NFS4ERR_NOMATCHING_LAYOUT": 10060,
+        "NFS4ERR_RECALLCONFLICT": 10061,
+        "NFS4ERR_UNKNOWN_LAYOUTTYPE": 10062,
+        "NFS4ERR_SEQ_MISORDERED": 10063,
+        "NFS4ERR_SEQUENCE_POS": 10064,
+        "NFS4ERR_REQ_TOO_BIG": 10065,
+        "NFS4ERR_REP_TOO_BIG": 10066,
+        "NFS4ERR_REP_TOO_BIG_TO_CACHE": 10067,
+        "NFS4ERR_RETRY_UNCACHED_REP": 10068,
+        "NFS4ERR_UNSAFE_COMPOUND": 10069,
+        "NFS4ERR_TOO_MANY_OPS": 10070,
+        "NFS4ERR_OP_NOT_IN_SESSION": 10071,
+        "NFS4ERR_HASH_ALG_UNSUPP": 10072,
+        "NFS4ERR_CLIENTID_BUSY": 10074,
+        "NFS4ERR_PNFS_IO_HOLE": 10075,
+        "NFS4ERR_SEQ_FALSE_RETRY": 10076,
+        "NFS4ERR_BAD_HIGH_SLOT": 10077,
+        "NFS4ERR_DEADSESSION": 10078,
+        "NFS4ERR_ENCR_ALG_UNSUPP": 10079,
+        "NFS4ERR_PNFS_NO_LAYOUT": 10080,
+        "NFS4ERR_NOT_ONLY_OP": 10081,
+        "NFS4ERR_WRONG_CRED": 10082,
+        "NFS4ERR_WRONG_TYPE": 10083,
+        "NFS4ERR_DIRDELEG_UNAVAIL": 10084,
+        "NFS4ERR_REJECT_DELEG": 10085,
+        "NFS4ERR_RETURNCONFLICT": 10086,
+        "NFS4ERR_DELEG_REVOKED": 10087,
+        "NFS4ERR_PARTNER_NOTSUPP": 10088,
+        "NFS4ERR_PARTNER_NO_AUTH": 10089,
+        "NFS4ERR_UNION_NOTSUPP": 10090,
+        "NFS4ERR_OFFLOAD_DENIED": 10091,
+        "NFS4ERR_WRONG_LFS": 10092,
+        "NFS4ERR_BADLABEL": 10093,
+        "NFS4ERR_OFFLOAD_NO_REQS": 10094,
+        "NFS4ERR_NOXATTR": 10095,
+        "NFS4ERR_XATTR2BIG": 10096,
+        "NFS4ERR_FIRST_FREE": 10097,
+    }
+)
+
+
+class Metrics(ctypes.Union):
+    _fields_ = [
+        ("latency_ns", ctypes.c_ulonglong),
+        ("retval", ctypes.c_int),
+    ]
+
+
+class Event(ctypes.Structure):
+    """Event c struct."""
+
+    _fields_ = [
+        ("pid", ctypes.c_uint),
+        ("command", ctypes.c_ushort),
+        ("tool", ctypes.c_char),
+        ("_pad", ctypes.c_char),
+        ("cmd_end_time_ns", ctypes.c_ulonglong),
+        ("rqst_id", ctypes.c_ulonglong),
+        ("metric", Metrics),
+        ("task", ctypes.c_char * TASK_COMM_LEN),
+    ]
+
+
+# we need to ensure that event_dtype and event cstruct is of the same size
+event_dtype = np.dtype(
+    [
+        ("pid", np.int32),
+        ("command", np.uint16),
+        ("tool", "S1"),
+        ("_pad", "S1"),
+        ("cmd_end_time_ns", np.uint64),
+        ("rqst_id", np.uint64),
+        (
+            "metric_latency_ns",
+            np.uint64,
+        ),  # This will be used to read latency, but can also be interpreted as retval when needed
+        ("task", f"S{TASK_COMM_LEN}"),
+    ],
+    align=True,
+)

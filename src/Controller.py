@@ -14,16 +14,16 @@ import time
 import ctypes
 import ctypes.util
 import logging
-import syslog
 
-
-from shared_data import ALL_SMB_CMDS
 from ConfigManager import ConfigManager
 from EventDispatcher import EventDispatcher
 from AnomalyWatcher import AnomalyWatcher
 from LogCollector import LogCollector
 from SpaceWatcher import SpaceWatcher
+from utils.anomaly_type import AnomalyType, Protocol
+from utils.config_schema import AnomalyKey
 from utils.pdeathsig_wrapper import pdeathsig_preexec
+from utils.syslogger import setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ def set_thread_name(name):
     try:
         libc = ctypes.CDLL(ctypes.util.find_library("c"))
         # Limit name to 15 characters (Linux kernel limit)
-        name = name[:15].encode('utf-8')
+        name = name[:15].encode("utf-8")
         libc.prctl(15, name, 0, 0, 0)  # PR_SET_NAME = 15
     except Exception:
         pass
@@ -51,7 +51,7 @@ class Controller:
         self.stop_event = threading.Event()
         self.config = ConfigManager(config_path).data
         self.threads = []
-        
+
         # Metrics tracking
         if __debug__:
             self.thread_restarts = 0
@@ -60,8 +60,9 @@ class Controller:
         self.anomalyActionQueue = queue.Queue()
         self.tool_processes = {}
         self.tool_cmd_builders = {
-            "smbslower": self._get_smbsloweraod_cmd,
-            # "smbiosnoop": self._get_smbiosnoop_cmd,
+            "smbslower": self._get_latency_tool_cmd,
+            "nfsslower": self._get_latency_tool_cmd,
+            "nfsiosnoop": self._get_error_tool_cmd,
         }
 
         # Initialize all components
@@ -74,25 +75,45 @@ class Controller:
         if __debug__:
             logger.info("Controller initialization complete")
 
-    def _supervise_thread(self, thread_name: str, target: callable, *args, **kwargs) -> None:
+    def _supervise_thread(
+        self,
+        thread_name: str,
+        target: callable,
+        *args,
+        fatal_on_exc: bool = False,
+        **kwargs,
+    ) -> None:
         """Start and supervise a thread, restarting it if it dies
-        unexpectedly."""
+        unexpectedly. If fatal_on_exc is True, an unhandled exception
+        instead escalates to a full service shutdown -- use this for
+        components that own non-reentrant state (e.g. an asyncio loop with
+        attached subprocesses) where restart-in-place would leak resources."""
 
         def runner():
-            set_thread_name(thread_name) #only to view thread name in top
+            set_thread_name(thread_name)  # only to view thread name in top
             while not self.stop_event.is_set():
                 try:
                     target(*args, **kwargs)
                 except Exception as e:
-                    logger.error("%s thread died unexpectedly: %s", thread_name, e)
+                    logger.exception(
+                        "%s thread died unexpectedly", thread_name, exc_info=True
+                    )
+                    if fatal_on_exc:
+                        logger.error(
+                            "%s cannot be restarted in-place; shutting down service",
+                            thread_name,
+                        )
+                        self.stop()
+                        return
                     if __debug__:
-                        logger.debug("Full traceback:", exc_info=True)
                         self.thread_restarts += 1
                     time.sleep(1)  # Wait before restarting
-                    if __debug__:
-                        logger.info("Restarting %s thread", thread_name)
-                    syslog.syslog(syslog.LOG_WARNING, f"AOD component {thread_name} restarted due to unexpected exit")
+                    logger.warning(
+                        "AOD component %s restarted due to unexpected exit",
+                        thread_name,
+                    )
 
+        num_consecutive_failures = 0
         t = threading.Thread(target=runner, name=thread_name, daemon=True)
         t.start()
         if __debug__:
@@ -101,26 +122,28 @@ class Controller:
 
     def _supervise_process(self, process_name: str, cmd_builder: callable) -> None:
         """Supervise a process, restarting it if it exits unexpectedly."""
-        set_thread_name("ProcessSupervisor") #only to view thread name in top
+        set_thread_name("ProcessSupervisor")  # only to view thread name in top
         while not self.stop_event.is_set():
             cmd = cmd_builder()
             process = subprocess.Popen(
-                cmd,
-                start_new_session=True,
-                preexec_fn=pdeathsig_preexec
+                cmd, start_new_session=True, preexec_fn=pdeathsig_preexec
             )
             self.tool_processes[process_name] = process
             if __debug__:
-                logger.info("Started %s process with PID %d", process_name, process.pid)
+                logger.info(
+                    "Started %s process with PID %d", process_name, process.pid
+                )
             while True:
                 if self.stop_event.wait(timeout=1):
                     break
                 if process.poll() is not None:
-                    logger.warning("%s process exited unexpectedly with code %d, restarting...", 
-                                 process_name, process.returncode)
+                    logger.warning(
+                        "AOD component %s exited unexpectedly with code %d, restarting...",
+                        process_name,
+                        process.returncode,
+                    )
                     if __debug__:
                         self.process_restarts += 1
-                    syslog.syslog(syslog.LOG_WARNING, f"AOD component {process_name} restarted due to unexpected exit")
                     break
             if self.stop_event.is_set():
                 try:
@@ -128,43 +151,100 @@ class Controller:
                     process.wait(timeout=5)
                     if __debug__:
                         logger.info("%s process stopped gracefully", process_name)
-                except RuntimeError:
-                    logger.warning("%s process did not stop gracefully", process_name)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "%s process did not stop in time; sending SIGKILL",
+                        process_name,
+                    )
+                    try:
+                        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                except ProcessLookupError:
+                    pass
                 break
             time.sleep(1)
 
-    def _get_smbsloweraod_cmd(self) -> list[str]:
-        """Get command array for the smbsloweraod process based on the latency
-        anomaly config."""
-        latency_anomaly = self.config.guardian.anomalies.get("latency")
-        if latency_anomaly is None:
-            min_threshold = 10
-            track_cmds = ",".join(str(cmd_id) for cmd_id in ALL_SMB_CMDS.keys())
-        else:
-            min_threshold = min(list(latency_anomaly.track.values()))
-            # track_cmds: list of all SMB commands we want to track, as numbers, comma-separated
-            smbcmds = [str(cmd_id) for cmd_id, threshold in latency_anomaly.track.items()]
-            track_cmds = ",".join(smbcmds)
-        
-        ebpf_binary_path = os.path.join(os.path.dirname(__file__), "bin", "smbsloweraod")
+    def _get_latency_tool_cmd(self, tool_name: str) -> list[str]:
+        """Get command array for a latency eBPF tool based on its anomaly config."""
+        anomaly_cfg = None
+        for cfg in self.config.anomalies.values():
+            if cfg.tool == tool_name:
+                anomaly_cfg = cfg
+                break
+
+        track_commands = anomaly_cfg.track["track_commands"]
+        min_threshold = min(track_commands.values())
+        track_cmds = ",".join(str(cmd_id) for cmd_id in track_commands.keys())
+
+        ebpf_binary_path = os.path.join(os.path.dirname(__file__), "bin", tool_name)
         return [ebpf_binary_path, "-m", str(min_threshold), "-c", track_cmds]
+
+    def _get_error_tool_cmd(self, tool_name: str) -> list[str]:
+        """Build the CLI for error eBPF tool based on its anomaly config. ConfigManager ensures that at least one of track_commands and track_errors is non-empty. Empty axis means no filter for that axis."""
+        anomaly_cfg = None
+        for cfg in self.config.anomalies.values():
+            if cfg.tool == tool_name:
+                anomaly_cfg = cfg
+                break
+
+        ebpf_binary_path = os.path.join(os.path.dirname(__file__), "bin", tool_name)
+        cmd = [ebpf_binary_path]
+        track_cmds = anomaly_cfg.track.get("track_commands", frozenset())
+        track_errs = anomaly_cfg.track.get("track_errors", frozenset())
+        if track_cmds:
+            cmd += ["-c", ",".join(str(c) for c in sorted(track_cmds))]
+        if track_errs:
+            cmd += ["-e", ",".join(str(e) for e in sorted(track_errs))]
+        return cmd
+
+    def trigger_snapshot(
+        self, anomaly_type: AnomalyType = AnomalyType.SNAPSHOT
+    ) -> None:
+        """Enqueue a full-system dump request. Safe to call from a signal
+        handler. No-op once shutdown is in progress so we don't race with
+        the sentinel pushed by stop()."""
+        if self.stop_event.is_set() and anomaly_type != AnomalyType.SHUTDOWN:
+            return
+        self.anomalyActionQueue.put(
+            {
+                "anomaly_key": AnomalyKey(Protocol.AOD, anomaly_type),
+                "timestamp": int(time.time() * 1e9),
+            }
+        )
 
     def stop(self) -> None:
         """Signal all threads and processes to stop."""
+        # Enqueue a shutdown dump BEFORE the sentinel so LogCollector picks
+        # it up before draining. Guard against double-stop (SIGTERM during
+        # SIGINT, etc.) so we don't emit two shutdown dumps.
+        if not self.stop_event.is_set():
+            self.trigger_snapshot(AnomalyType.SHUTDOWN)
         self.stop_event.set()
+        # Wake AnomalyWatcher. It will propagate its own sentinel to
+        # anomalyActionQueue, but we also push one here as a backup in case
+        # AnomalyWatcher died before reaching its post-loop sentinel push;
+        # otherwise LogCollector would block forever in queue.get().
+        self.eventQueue.put(None)
+        self.anomalyActionQueue.put(None)
 
     def _shutdown(self) -> None:
         """Shutdown all threads and components gracefully."""
-
-        # Wait for all queues to be processed
-        self.eventQueue.join()
-        self.anomalyActionQueue.join()
-
         for thread in self.threads:
             thread.join(timeout=5)
             if __debug__:
-                logger.info("Thread %s with ID %d has been shut down", thread.name, thread.ident)
-                logger.info("Shutting down all components")
+                if thread.is_alive():
+                    logger.warning(
+                        "Thread %s with ID %d did not exit within timeout",
+                        thread.name,
+                        thread.ident,
+                    )
+                else:
+                    logger.info(
+                        "Thread %s with ID %d has been shut down",
+                        thread.name,
+                        thread.ident,
+                    )
 
         if hasattr(self, "event_dispatcher"):
             self.event_dispatcher.cleanup()
@@ -174,7 +254,7 @@ class Controller:
     def _extract_tools(self) -> set[str]:
         """Extract the set of ebpf tools to run from the config."""
         tool_names = set()
-        for anomaly in self.config.guardian.anomalies.values():
+        for anomaly in self.config.anomalies.values():
             tool_names.add(anomaly.tool)
         return tool_names
 
@@ -182,28 +262,47 @@ class Controller:
         """Start all supervisor threads and wait for shutdown."""
         if __debug__:
             logger.info("Starting AOD service")
-        set_thread_name("Controller") #only to view thread name in top
+        set_thread_name("Controller")  # only to view thread name in top
         tool_names = self._extract_tools()
         if __debug__:
             logger.info("Starting tools: %s", tool_names)
         for tool_name in tool_names:
             cmd_builder = self.tool_cmd_builders.get(tool_name)
-            if cmd_builder:
-                t = threading.Thread(
-                    target=self._supervise_process,
-                    args=(tool_name, cmd_builder),
-                    name=f"{tool_name}_Supervisor",
-                    daemon=True,
+            if cmd_builder is None:
+                # Userspace tools (e.g. `ss`) are driven by AnomalyWatcher,
+                # not by the process supervisor.
+                logger.debug(
+                    "No process-supervisor entry for tool '%s'; skipping",
+                    tool_name,
                 )
-                t.start()
-                self.threads.append(t)
-            else:
-                logger.warning("No command builder defined for tool '%s'", tool_name)
+                continue
+            t = threading.Thread(
+                target=self._supervise_process,
+                # Both `tool_name` and `cmd_builder` MUST be bound as default
+                # args. Closing over either by name would late-bind to the
+                # final loop iteration's value and crash when the thread
+                # finally runs the lambda.
+                args=(
+                    tool_name,
+                    lambda tn=tool_name, cb=cmd_builder: cb(tn),
+                ),
+                name=f"{tool_name}_Supervisor",
+                daemon=True,
+            )
+            t.start()
+            self.threads.append(t)
 
         self._supervise_thread("EventDispatcher", self.event_dispatcher.run)
         self._supervise_thread("AnomalyWatcher", self.anomaly_watcher.run)
-        self._supervise_thread("LogCollector", self.log_collector_manager.run)
+        # LogCollector owns an asyncio loop with attached subprocess handles
+        # (LongCapture). A fresh loop on restart would orphan those handles
+        # and leak their underlying processes, so escalate to a full shutdown
+        # and let the service supervisor restart us cleanly.
+        self._supervise_thread(
+            "LogCollector", self.log_collector_manager.run, fatal_on_exc=True
+        )
         self._supervise_thread("SpaceWatcher", self.space_watcher.run)
+        logger.info("AODv2 service started successfully")
         self.stop_event.wait()
         self._shutdown()
 
@@ -215,8 +314,23 @@ def handle_signal(controller, signum, frame):
     controller.stop()
 
 
+def handle_snapshot_signal(controller, signum, frame):
+    """Handle SIGUSR1 by enqueuing a full-system snapshot."""
+    if __debug__:
+        logger.info("Received signal %d, triggering snapshot...", signum)
+    controller.trigger_snapshot()
+
+
 def main():
     """Main entry point for the AODv2 controller daemon."""
+    log_level = os.getenv("AOD_LOG_LEVEL", "INFO").upper()
+    syslog_level = os.getenv("AOD_SYSLOG_LEVEL", "WARNING").upper()
+    stderr = os.getenv("AOD_LOG_STDERR", "0") == "1"
+    setup_logging(
+        getattr(logging, log_level, logging.INFO),
+        stderr=stderr,
+        syslog_level=getattr(logging, syslog_level, logging.WARNING),
+    )
 
     # Check if script is running as root
     if os.geteuid() != 0:
@@ -224,27 +338,22 @@ def main():
 
     # add arguments later
 
-    # Use the config path relative to this file, as in controller_draft.py
-    config_path = os.path.join(os.path.dirname(__file__), "../config/config.yaml")
+    config_path = os.environ.get(
+        "AOD_CONFIG",
+        os.path.join(os.path.dirname(__file__), "../config/config.yaml"),
+    )
     controller = Controller(config_path)
     signal.signal(signal.SIGTERM, partial(handle_signal, controller))
     signal.signal(signal.SIGINT, partial(handle_signal, controller))
+    signal.signal(signal.SIGUSR1, partial(handle_snapshot_signal, controller))
     controller.run()
 
 
 if __name__ == "__main__":
-    # Simple logging setup - configure root logger
     # Performance optimized: Verbose logger.info calls wrapped in if __debug__
     # Use python -O for production to remove all debug overhead
-    log_level = os.getenv('AOD_LOG_LEVEL', 'INFO').upper()
-    logging.basicConfig(
-        level=getattr(logging, log_level, logging.INFO),
-        format='%(name)s - %(levelname)s - %(message)s'
-    )
-    
+
     try:
         main()
     except Exception as e:
-        logging.error("Fatal error in main(): %s", e)
-        if __debug__:
-            logging.debug("Full traceback:", exc_info=True)
+        logger.exception("Fatal error in main():", exc_info=True)
