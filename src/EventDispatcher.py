@@ -9,7 +9,14 @@ import time
 import struct
 import numpy as np
 
-from shared_data import SHM_NAME, SHM_SIZE, SHM_DATA_SIZE, HEAD_TAIL_BYTES, event_dtype, MAX_WAIT
+from shared_data import (
+    SHM_NAME,
+    SHM_SIZE,
+    SHM_DATA_SIZE,
+    HEAD_TAIL_BYTES,
+    event_dtype,
+    MAX_WAIT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +57,9 @@ class EventDispatcher:
         except FileNotFoundError:
             # This is expected on first startup - create new shared memory
             if __debug__:
-                logger.info("Shared memory not found, creating new: %s", shm_file_path)
+                logger.info(
+                    "Shared memory not found, creating new: %s", shm_file_path
+                )
             shm_fd = os.open(shm_file_path, os.O_RDWR | os.O_CREAT, 0o666)
             shm_created = True
         except Exception as e:
@@ -67,7 +76,10 @@ class EventDispatcher:
 
         try:
             shm_map = mmap.mmap(
-                shm_fd, SHM_SIZE, flags=mmap.MAP_SHARED, prot=mmap.PROT_READ | mmap.PROT_WRITE
+                shm_fd,
+                SHM_SIZE,
+                flags=mmap.MAP_SHARED,
+                prot=mmap.PROT_READ | mmap.PROT_WRITE,
             )
         except Exception as e:
             logger.error("Failed to map shared memory: %s", e)
@@ -80,7 +92,9 @@ class EventDispatcher:
         """Tells how much data is available in the shared memory buffer."""
         self.shm_map.seek(0)
         head = struct.unpack_from(self.head_tail_fmt, self.shm_map, 0)[0]
-        tail = struct.unpack_from(self.head_tail_fmt, self.shm_map, HEAD_TAIL_BYTES)[0]
+        tail = struct.unpack_from(self.head_tail_fmt, self.shm_map, HEAD_TAIL_BYTES)[
+            0
+        ]
         if tail == head:
             return 0
         if tail < head:
@@ -97,54 +111,75 @@ class EventDispatcher:
             total_events_processed = 0
             batch_count = 0
             total_latency = 0
-        
+
         while not self.controller.stop_event.is_set():
             no_of_events = self._get_buffer_size() // event_dtype.itemsize
             if no_of_events >= 10 or timer == 0:
                 timer = 3  # reset timer
                 if no_of_events == 0:
                     continue
-                    
+
                 if __debug__:
-                    logger.debug("Processing %d events from shared memory", no_of_events)
-                
+                    logger.debug(
+                        "Processing %d events from shared memory", no_of_events
+                    )
+
                 time.sleep(MAX_WAIT)
                 raw_events = self._poll_shm_buffer()
                 parsed_events = self._parse(raw_events)
                 self.controller.eventQueue.put(parsed_events)
-                
+
                 # Metrics tracking
                 if __debug__:
                     batch_count += 1
                     batch_size = len(parsed_events)
                     total_events_processed += batch_size
-                    
+
                     # Calculate average latency for this batch
-                    if batch_size > 0 and 'latency_ns' in parsed_events.dtype.names:
-                        batch_latency = parsed_events['latency_ns'].sum()
+                    if batch_size > 0 and "latency_ns" in parsed_events.dtype.names:
+                        batch_latency = parsed_events["latency_ns"].sum()
                         total_latency += batch_latency
-                    
+
                     if batch_count % 10 == 0:  # Log metrics every 10 batches
                         avg_events_per_batch = total_events_processed / batch_count
-                        avg_latency_ms = (total_latency / total_events_processed / 1_000_000) if total_events_processed > 0 else 0
-                        logger.debug("EventDispatcher metrics: batches=%d, total_events=%d, avg_per_batch=%.1f, avg_latency=%.2fms", 
-                                   batch_count, total_events_processed, avg_events_per_batch, avg_latency_ms)
+                        avg_latency_ms = (
+                            (total_latency / total_events_processed / 1_000_000)
+                            if total_events_processed > 0
+                            else 0
+                        )
+                        logger.debug(
+                            "EventDispatcher metrics: batches=%d, total_events=%d, avg_per_batch=%.1f, avg_latency=%.2fms",
+                            batch_count,
+                            total_events_processed,
+                            avg_events_per_batch,
+                            avg_latency_ms,
+                        )
             else:
                 time.sleep(1)
                 timer -= 1
-        
+
         if __debug__:
-            avg_latency_ms = (total_latency / total_events_processed / 1_000_000) if total_events_processed > 0 else 0
-            logger.info("EventDispatcher stopping. Final metrics: batches=%d, total_events=%d, avg_latency=%.2fms", 
-                       batch_count, total_events_processed, avg_latency_ms)
-        self.controller.eventQueue.put(None) #send sentinal to the queue
+            avg_latency_ms = (
+                (total_latency / total_events_processed / 1_000_000)
+                if total_events_processed > 0
+                else 0
+            )
+            logger.info(
+                "EventDispatcher stopping. Final metrics: batches=%d, total_events=%d, avg_latency=%.2fms",
+                batch_count,
+                total_events_processed,
+                avg_latency_ms,
+            )
+        self.controller.eventQueue.put(None)  # send sentinal to the queue
 
     def _poll_shm_buffer(self) -> bytes:
         """Fetch a batch of raw events from shared memory."""
 
         self.shm_map.seek(0)
         head = struct.unpack_from(self.head_tail_fmt, self.shm_map, 0)[0]
-        tail = struct.unpack_from(self.head_tail_fmt, self.shm_map, HEAD_TAIL_BYTES)[0]
+        tail = struct.unpack_from(self.head_tail_fmt, self.shm_map, HEAD_TAIL_BYTES)[
+            0
+        ]
 
         if tail == head:
             # no events to read
@@ -190,8 +225,11 @@ class EventDispatcher:
             head = struct.unpack_from(self.head_tail_fmt, self.shm_map, 0)[0]
             tail = struct.unpack_from(self.head_tail_fmt, self.shm_map, 8)[0]
             if head != tail:
-                logger.warning("Head and tail are not equal, indicating potential data loss (head=%d, tail=%d)", 
-                             head, tail)
+                logger.warning(
+                    "Head and tail are not equal, indicating potential data loss (head=%d, tail=%d)",
+                    head,
+                    tail,
+                )
 
             self.shm_map.close()
             os.close(self.shm_fd)
