@@ -1,15 +1,28 @@
-# Makefile for building DEB and RPM packages
+# Makefile for building AODv2
 
-.PHONY: all debian rpm clean
+.PHONY: all build install-bins clean
 
-all: debian rpm
+all: build install-bins
 
-debian:
-	cd packages/debian && dpkg-buildpackage -us -uc
+build:
+	$(MAKE) -C monitoring_tools
 
-rpm:
-	cd packages/rpm && rpmbuild -ba linux_diagnostics.spec
+install-bins:
+	mkdir -p src/bin
+	cp monitoring_tools/src/bin/* src/bin/
 
 clean:
-	cd packages/debian && dpkg-buildpackage -k
-	cd packages/rpm && rm -rf *.rpm *.src.rpm
+	$(MAKE) -C monitoring_tools clean
+	rm -f src/bin/*
+
+# all: debian rpm
+
+# debian:
+# 	cd packages/debian && dpkg-buildpackage -us -uc
+
+# rpm:
+# 	cd packages/rpm && rpmbuild -ba linux_diagnostics.spec
+
+# clean:
+# 	cd packages/debian && dpkg-buildpackage -k
+# 	cd packages/rpm && rm -rf *.rpm *.src.rpm
